@@ -1,0 +1,5 @@
+Objects/
+AutoBackups/
+*.apk
+*.zip
+*.log

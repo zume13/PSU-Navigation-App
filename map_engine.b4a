@@ -1,0 +1,518 @@
+﻿Build1=Default,b4a.example
+File1=dhvsu_map_test.mbtiles
+File2=Layout.bal
+FileGroup1=Default Group
+FileGroup2=Default Group
+Group=Default Group
+Library1=core
+Library2=gps
+Library3=javaobject
+Library4=reflection
+Library5=runtimepermissions
+Library6=sql
+Library7=xui
+Library8=fusedlocationprovider
+ManifestCode='This code will be applied to the manifest file during compilation.~\n~'You do not need to modify it in most cases.~\n~'See this link for for more information: https://www.b4x.com/forum/showthread.php?p=78136~\n~AddManifestText(~\n~<uses-sdk android:minSdkVersion="21" android:targetSdkVersion="35"/>~\n~<supports-screens android:largeScreens="true" ~\n~    android:normalScreens="true" ~\n~    android:smallScreens="true" ~\n~    android:anyDensity="true"/>)~\n~SetApplicationAttribute(android:icon, "@drawable/icon")~\n~SetApplicationAttribute(android:label, "$LABEL$")~\n~CreateResourceFromFile(Macro, Themes.LightTheme)~\n~'End of default text.~\n~~\n~AddPermission(android.permission.ACCESS_FINE_LOCATION)~\n~AddPermission(android.permission.ACCESS_COARSE_LOCATION)~\n~~\n~AddApplicationText(~\n~  <meta-data~\n~    android:name="com.google.android.gms.version"~\n~    android:value="@integer/google_play_services_version" />~\n~)
+Module1=Starter
+NumberOfFiles=2
+NumberOfLibraries=8
+NumberOfModules=1
+Version=13.4
+@EndOfDesignText@
+#Region  Project Attributes 
+	#ApplicationLabel: Campus Navigator 
+	#VersionCode: 1
+	#VersionName: 1.0
+	' SupportedOrientations possible values: unspecified, landscape or portrait.
+	#SupportedOrientations: portrait
+	#CanInstallToExternalStorage: False
+	
+	' --- THIS IS THE MAGIC LINE ---
+	#AdditionalJar: com.google.android.gms:play-services-location
+#End Region
+
+Sub Process_Globals
+	Private sql1 As SQL
+	Private TILE_SIZE As Int = 256
+	
+	' --- THE BOUNDARY WALLS ---
+	Private MinTileX As Int, MaxTileX As Int
+	Private MinTileY As Int, MaxTileY As Int
+End Sub
+
+Sub Globals
+	' The Two-Layer System
+	Private pnlCanvas As Panel ' The oversized map that moves
+	Private pnlTouch As Panel  ' The fixed invisible glass that tracks your finger
+	
+	' --- THE TV WALL (ImageView Grid) ---
+	Private Const MAX_COLS As Int = 10
+	Private Const MAX_ROWS As Int = 20
+	Private TileViews(MAX_COLS, MAX_ROWS) As ImageView
+	Private TilesAcross As Int
+	Private TilesDown As Int
+	
+	Private CurrentZoom As Int = 22
+	Private CenterTileX As Int
+	Private CenterTileY As Int
+	
+	Private LastTouchX As Float
+	Private LastTouchY As Float
+	
+	Private TileCache As Map
+	
+	' --- THE SCREEN BUFFERS ---
+	Private BufferX As Int
+	Private BufferY As Int
+	
+	' --- MULTI-TOUCH VARIABLES ---
+	Private IsPinching As Boolean = False
+	Private InitialPinchDistance As Float = 0
+	
+	Private CurrentScale As Float = 1.0
+	
+	Private ZoomJustTriggered As Boolean = False
+	
+	' GPS
+	' --- GPS AND PERMISSIONS ---
+	Private flp As FusedLocationProvider
+	Private rp As RuntimePermissions
+	
+	' --- THE BLUE DOT ---
+	Private pnlBlueDot As Panel
+	Private DOT_SIZE As Int = 16dip
+	Private CurrentLat As Double = 0
+	Private CurrentLon As Double = 0
+	
+	Private FirstSnapDone As Boolean = False
+	
+End Sub
+
+Sub Activity_Create(FirstTime As Boolean)
+	If TileCache.IsInitialized = False Then TileCache.Initialize
+	TileCache.Clear
+
+	' 1. Calculate how many tiles we need to cover the screen + 1 buffer on all sides
+	TilesAcross = Ceil(100%x / TILE_SIZE) + 2
+	TilesDown = Ceil(100%y / TILE_SIZE) + 2
+	
+	' 2. The Moving Map Layer
+	pnlCanvas.Initialize("")
+	pnlCanvas.Color = Colors.RGB(238, 235, 225) ' <-- ADD THIS LINE (Google Maps Base Color)
+	Activity.AddView(pnlCanvas, -TILE_SIZE, -TILE_SIZE, TilesAcross * TILE_SIZE, TilesDown * TILE_SIZE)
+	
+	' 3. Build the TV Wall (Hardware Accelerated ImageViews!)
+	For col = 0 To TilesAcross - 1
+		For row = 0 To TilesDown - 1
+			TileViews(col, row).Initialize("")
+			' We stretch the image slightly to prevent micro-gaps between tiles
+			TileViews(col, row).Gravity = Gravity.FILL
+			pnlCanvas.AddView(TileViews(col, row), col * TILE_SIZE, row * TILE_SIZE, TILE_SIZE, TILE_SIZE)
+		Next
+	Next
+	
+	' 1. Create the Blue Dot and attach it to the MOVING map
+	pnlBlueDot.Initialize("")
+	Dim cd As ColorDrawable
+	cd.Initialize2(Colors.Blue, DOT_SIZE / 2, 2dip, Colors.White) ' Blue circle with white border
+	pnlBlueDot.Background = cd
+	pnlBlueDot.Visible = False ' Hide until we have a location
+	
+	' Adding it to pnlCanvas means it moves naturally when you drag the map!
+	pnlCanvas.AddView(pnlBlueDot, 0, 0, DOT_SIZE, DOT_SIZE)
+	
+	' 2. Request Permission and Connect FLP
+	rp.CheckAndRequest(rp.PERMISSION_ACCESS_FINE_LOCATION)
+	Wait For Activity_PermissionResult (Permission As String, Result As Boolean)
+	
+	If Result Then
+		flp.Initialize("flp")
+		flp.Connect
+	Else
+		ToastMessageShow("Location permission denied. Blue Dot disabled.", True)
+	End If
+
+	
+	' 2. The Touch Tracker Layer (Fixed to the screen)
+	pnlTouch.Initialize("")
+	Activity.AddView(pnlTouch, 0, 0, 100%x, 100%y)
+	
+	' --- NATIVE HARDWARE REFLECTION ---
+	Dim r As Reflector
+	r.Target = pnlTouch
+	r.SetOnTouchListener("MapTouch")
+
+	
+	If File.Exists(File.DirInternal, "dhvsu_map_test.mbtiles") = False Then
+		File.Copy(File.DirAssets, "dhvsu_map_test.mbtiles", File.DirInternal, "dhvsu_map_test.mbtiles")
+	End If
+	If sql1.IsInitialized = False Then
+		sql1.Initialize(File.DirInternal, "dhvsu_map_test.mbtiles", False)
+	End If
+	
+	' Find the Center AND Boundaries of DHVSU
+	Dim rs As ResultSet = sql1.ExecQuery2("SELECT MIN(tile_column), MAX(tile_column), MIN(tile_row), MAX(tile_row) FROM tiles WHERE zoom_level = ?", Array As String(CurrentZoom))
+	If rs.NextRow Then
+		' Save the edges of the world
+		MinTileX = rs.GetInt2(0)
+		MaxTileX = rs.GetInt2(1)
+		MinTileY = rs.GetInt2(2)
+		MaxTileY = rs.GetInt2(3)
+		
+		' Calculate the center
+		CenterTileX = MinTileX + (MaxTileX - MinTileX) / 2
+		CenterTileY = MinTileY + (MaxTileY - MinTileY) / 2
+		' Calculate how many tiles wide/tall half of the screen is
+		BufferX = Floor(Ceil(100%x / TILE_SIZE) / 2)
+		BufferY = Floor(Ceil(100%y / TILE_SIZE) / 2)
+	End If
+	rs.Close
+	
+	' --- INITIAL CAMERA SNAP (Center on DHVSU) ---
+	' We just center the map here so it doesn't start in the gray void.
+	' We DO NOT draw the Blue Dot yet. We wait for the GPS to find us!
+	Dim exactTileX As Double = GetTileX(120.655083, CurrentZoom)
+	Dim exactTileY As Double = GetTileY(14.997889, CurrentZoom)
+	CenterTileX = Floor(exactTileX)
+	CenterTileY = Floor(exactTileY)
+	pnlCanvas.Left = -TILE_SIZE
+	pnlCanvas.Top = -TILE_SIZE
+	RenderGrid
+	
+	' Notice we removed the pnlBlueDot.Visible = True from here!
+End Sub
+
+' --- THE SMART ON-DEMAND LOADER (CRASH-PROOF) ---
+Sub LoadTile(Z As Int, X As Int, Y As Int) As Bitmap
+	Dim TileKey As String = Z & "_" & X & "_" & Y
+	
+	' 1. If we already have it in RAM, use it instantly!
+	If TileCache.ContainsKey(TileKey) Then Return TileCache.Get(TileKey)
+	
+	' 2. If it's not in RAM, quickly grab it from the database
+	Dim bmp As Bitmap
+	Dim rs As ResultSet = sql1.ExecQuery2("SELECT tile_data FROM tiles WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?", Array As String(Z, X, Y))
+	
+	If rs.NextRow Then
+		Dim data() As Byte = rs.GetBlob2(0)
+		Dim InStream As InputStream
+		InStream.InitializeFromBytesArray(data, 0, data.Length)
+		bmp.Initialize2(InStream)
+		InStream.Close
+		
+		' Save it to RAM so we don't have to ask the DB again
+		TileCache.Put(TileKey, bmp)
+		
+		' THE CRASH SAVER: If RAM gets too full, empty the trash!
+		If TileCache.Size > 1000 Then TileCache.Clear
+		
+		rs.Close
+		Return bmp
+	End If
+	
+	rs.Close
+	Return Null
+End Sub
+
+' --- THE HARDWARE TILE GRID RENDERER (Restored TMS Math) ---
+Sub RenderGrid
+	Dim StartCol As Int = CenterTileX - Floor(TilesAcross / 2)
+	Dim StartRow As Int = CenterTileY + Floor(TilesDown / 2) ' <-- Changed back to PLUS
+	
+	For col = 0 To TilesAcross - 1
+		For row = 0 To TilesDown - 1
+			
+			Dim TargetX As Int = StartCol + col
+			Dim TargetY As Int = StartRow - row ' <-- Changed back to MINUS
+			
+			Dim iv As ImageView = TileViews(col, row)
+			Dim bmp As Bitmap = LoadTile(CurrentZoom, TargetX, TargetY)
+			
+			If bmp <> Null And bmp.IsInitialized Then
+				iv.Bitmap = bmp
+			Else
+				iv.Bitmap = Null
+			End If
+		Next
+	Next
+End Sub
+
+' --- THE ZOOM MATH ENGINE (Anti-Teleport Upgraded) ---
+Sub ChangeZoom(TargetZoom As Int)
+	If TargetZoom < 18 Or TargetZoom > 22 Then Return
+	If TargetZoom = CurrentZoom Then Return
+
+	' 1. Calculate exactly how many pixels the user has dragged from the center
+	Dim panOffsetX As Float = pnlCanvas.Left - (-TILE_SIZE)
+	Dim panOffsetY As Float = pnlCanvas.Top - (-TILE_SIZE)
+
+	' 2. The Slippy Map Zoom Math
+	If TargetZoom > CurrentZoom Then
+		CenterTileX = CenterTileX * 2
+		CenterTileY = CenterTileY * 2
+		' Multiply the drag offset so the map stays exactly under their fingers!
+		pnlCanvas.Left = -TILE_SIZE + (panOffsetX * 2)
+		pnlCanvas.Top = -TILE_SIZE + (panOffsetY * 2)
+	Else
+		CenterTileX = Floor(CenterTileX / 2)
+		CenterTileY = Floor(CenterTileY / 2)
+		' Divide the drag offset
+		pnlCanvas.Left = -TILE_SIZE + (panOffsetX / 2)
+		pnlCanvas.Top = -TILE_SIZE + (panOffsetY / 2)
+	End If
+
+	CurrentZoom = TargetZoom
+
+	Dim rs As ResultSet = sql1.ExecQuery2("SELECT MIN(tile_column), MAX(tile_column), MIN(tile_row), MAX(tile_row) FROM tiles WHERE zoom_level = ?", Array As String(CurrentZoom))
+	If rs.NextRow Then
+		MinTileX = rs.GetInt2(0)
+		MaxTileX = rs.GetInt2(1)
+		MinTileY = rs.GetInt2(2)
+		MaxTileY = rs.GetInt2(3)
+	End If
+	rs.Close
+
+	' 3. Normalize the new offsets in case the zoom pushed us past a tile boundary
+	Do While pnlCanvas.Left > 0
+		CenterTileX = CenterTileX - 1
+		pnlCanvas.Left = pnlCanvas.Left - TILE_SIZE
+	Loop
+	Do While pnlCanvas.Left < -(TILE_SIZE * 2)
+		CenterTileX = CenterTileX + 1
+		pnlCanvas.Left = pnlCanvas.Left + TILE_SIZE
+	Loop
+	Do While pnlCanvas.Top > 0
+		CenterTileY = CenterTileY + 1
+		pnlCanvas.Top = pnlCanvas.Top - TILE_SIZE
+	Loop
+	Do While pnlCanvas.Top < -(TILE_SIZE * 2)
+		CenterTileY = CenterTileY - 1
+		pnlCanvas.Top = pnlCanvas.Top + TILE_SIZE
+	Loop
+	
+	' --- THE PRE-WIPE MASK ---
+	' Instantly blank the TV monitors so old tiles don't flash in the wrong position!
+	For col = 0 To TilesAcross - 1
+		For row = 0 To TilesDown - 1
+			TileViews(col, row).Bitmap = Null
+		Next
+	Next
+	
+	RenderGrid
+	UpdateBlueDotPosition
+End Sub
+
+
+' --- THE SMOOTH GOOGLE MAPS TOUCH ENGINE (Upgraded!) ---
+Sub MapTouch (ViewTag As Object, Action As Int, X As Float, Y As Float, MotionEvent As Object) As Boolean 'ignore
+	Try
+		Dim event As JavaObject = MotionEvent
+		Dim pointerCount As Int = event.RunMethod("getPointerCount", Null)
+		Dim actionMasked As Int = Bit.And(Action, 255)
+		
+		Dim joCanvas As JavaObject = pnlCanvas
+
+		' ==========================================
+		' PHASE 1: PINCH TO ZOOM (With Zoom Lock!)
+		' ==========================================
+		If pointerCount = 2 Then
+			IsPinching = True
+			
+			Dim x1 As Float = X
+			Dim y1 As Float = Y
+			Dim x2 As Float = event.RunMethod("getX", Array As Object(1))
+			Dim y2 As Float = event.RunMethod("getY", Array As Object(1))
+			
+			Dim distance As Float = Sqrt(Power(x1 - x2, 2) + Power(y1 - y2, 2))
+			
+			If actionMasked = 5 Then ' ACTION_POINTER_DOWN
+				InitialPinchDistance = distance
+				ZoomJustTriggered = False ' Reset the lock
+				
+				Dim midX As Float = (x1 + x2) / 2
+				Dim midY As Float = (y1 + y2) / 2
+				joCanvas.RunMethod("setPivotX", Array As Object(midX - pnlCanvas.Left))
+				joCanvas.RunMethod("setPivotY", Array As Object(midY - pnlCanvas.Top))
+				
+			Else If actionMasked = 2 Then ' ACTION_MOVE
+				If InitialPinchDistance > 0 Then
+					CurrentScale = distance / InitialPinchDistance
+					
+					' --- 6. THE ZOOM LOCK ---
+					If ZoomJustTriggered Then
+						' Require the fingers to relax back near 1.0 before allowing another zoom
+						If CurrentScale > 0.8 And CurrentScale < 1.2 Then
+							ZoomJustTriggered = False
+							InitialPinchDistance = distance ' Recalibrate the stretch
+						End If
+					Else
+						' Swap tiles seamlessly while moving!
+						If CurrentZoom < 22 And CurrentScale >= 2.0 Then
+							ChangeZoom(CurrentZoom + 1)
+							InitialPinchDistance = distance
+							CurrentScale = 1.0
+							ZoomJustTriggered = True ' LOCK IT!
+						Else If CurrentZoom > 18 And CurrentScale <= 0.5 Then
+							ChangeZoom(CurrentZoom - 1)
+							InitialPinchDistance = distance
+							CurrentScale = 1.0
+							ZoomJustTriggered = True ' LOCK IT!
+						End If
+					End If
+					
+					' Apply the Clamps
+					If CurrentZoom <= 18 And CurrentScale < 1.0 Then CurrentScale = 1.0
+					If CurrentZoom >= 22 And CurrentScale > 1.0 Then CurrentScale = 1.0
+					
+					' Physically stretch the image on the screen
+					joCanvas.RunMethod("setScaleX", Array As Object(CurrentScale))
+					joCanvas.RunMethod("setScaleY", Array As Object(CurrentScale))
+				End If
+			End If
+			Return True
+		End If
+		
+		' ==========================================
+		' PHASE 2: NORMAL DRAGGING (With Anti-Jitter!)
+		' ==========================================
+		If pointerCount = 1 And IsPinching = False Then
+			If actionMasked = 0 Then ' ACTION_DOWN
+				LastTouchX = X
+				LastTouchY = Y
+				
+			Else If actionMasked = 2 Then ' ACTION_MOVE
+				Dim deltaX As Float = X - LastTouchX
+				Dim deltaY As Float = Y - LastTouchY
+				
+				' --- 9. THE ANTI-JITTER THRESHOLD ---
+				' Only process the math if the finger actually moved more than 2 pixels!
+				If Abs(deltaX) > 2 Or Abs(deltaY) > 2 Then
+					
+					Dim NextLeft As Float = pnlCanvas.Left + deltaX
+					Dim NextTop As Float = pnlCanvas.Top + deltaY
+					
+					If (CenterTileX - BufferX) <= MinTileX And NextLeft > -TILE_SIZE Then NextLeft = -TILE_SIZE
+					If (CenterTileX + BufferX) >= MaxTileX And NextLeft < -TILE_SIZE Then NextLeft = -TILE_SIZE
+					If (CenterTileY + BufferY) >= MaxTileY And NextTop > -TILE_SIZE Then NextTop = -TILE_SIZE
+					If (CenterTileY - BufferY) <= MinTileY And NextTop < -TILE_SIZE Then NextTop = -TILE_SIZE
+					
+					pnlCanvas.Left = NextLeft
+					pnlCanvas.Top = NextTop
+					LastTouchX = X
+					LastTouchY = Y
+					
+					Dim NeedsRedraw As Boolean = False
+					Do While pnlCanvas.Left > 0
+						CenterTileX = CenterTileX - 1
+						pnlCanvas.Left = pnlCanvas.Left - TILE_SIZE
+						NeedsRedraw = True
+					Loop
+					Do While pnlCanvas.Left < -(TILE_SIZE * 2)
+						CenterTileX = CenterTileX + 1
+						pnlCanvas.Left = pnlCanvas.Left + TILE_SIZE
+						NeedsRedraw = True
+					Loop
+					Do While pnlCanvas.Top > 0
+						CenterTileY = CenterTileY + 1
+						pnlCanvas.Top = pnlCanvas.Top - TILE_SIZE
+						NeedsRedraw = True
+					Loop
+					Do While pnlCanvas.Top < -(TILE_SIZE * 2)
+						CenterTileY = CenterTileY - 1
+						pnlCanvas.Top = pnlCanvas.Top + TILE_SIZE
+						NeedsRedraw = True
+					Loop
+					
+					If NeedsRedraw Then
+						RenderGrid
+						UpdateBlueDotPosition
+					End If
+				End If
+			End If
+		End If
+		
+		' ==========================================
+		' PHASE 3: THE SNAP (Fingers Let Go)
+		' ==========================================
+		If actionMasked = 1 Or actionMasked = 6 Then ' UP or POINTER_UP
+			If IsPinching Then
+				IsPinching = False
+				ZoomJustTriggered = False ' Unlock on release
+				
+				Dim resetScale As Float = 1.0
+				joCanvas.RunMethod("setScaleX", Array As Object(resetScale))
+				joCanvas.RunMethod("setScaleY", Array As Object(resetScale))
+				CurrentScale = 1.0
+				
+				LastTouchX = X
+				LastTouchY = Y
+			End If
+		End If
+
+	Catch
+		Log("Crash Prevented: " & LastException.Message)
+	End Try
+	
+	Return True
+End Sub
+
+' --- FUSED LOCATION PROVIDER EVENTS ---
+Sub flp_ConnectionSuccess
+	Log("GPS Engine Connected!")
+	Dim LocationRequest1 As LocationRequest
+	LocationRequest1.Initialize
+	LocationRequest1.SetInterval(2000) ' Ask for an update every 2 seconds
+	LocationRequest1.SetPriority(LocationRequest1.Priority.PRIORITY_HIGH_ACCURACY)
+	flp.RequestLocationUpdates(LocationRequest1)
+End Sub
+
+Sub flp_ConnectionFailed(ConnectionResult1 As Int)
+	Log("GPS Engine Failed: " & ConnectionResult1)
+End Sub
+
+' --- THE LIVE GPS TRACKER ---
+Sub flp_LocationChanged (Location1 As Location)
+	CurrentLat = Location1.Latitude
+	CurrentLon = Location1.Longitude
+	
+	' Show the dot once we have a signal
+	pnlBlueDot.Visible = True
+	
+	' We ONLY move the dot, we NEVER move the camera!
+	UpdateBlueDotPosition
+End Sub
+
+' --- GPS TO TILE MATH ---
+Sub GetTileX(Lon As Double, Zoom As Int) As Double
+	Return (Lon + 180) / 360 * Power(2, Zoom)
+End Sub
+
+' --- GPS TO TILE MATH (Fixed with TMS Flip) ---
+Sub GetTileY(Lat As Double, Zoom As Int) As Double
+	Dim latRad As Double = Lat * cPI / 180
+	Dim innerValue As Double = Tan(latRad) + (1 / Cos(latRad))
+	Dim naturalLog As Double = Logarithm(innerValue, cE)
+	Dim googleY As Double = (1 - (naturalLog / cPI)) / 2 * Power(2, Zoom)
+	
+	' Restore the MBTiles TMS Y-Flip!
+	Return (Power(2, Zoom) - 1) - googleY
+End Sub
+
+' --- TELEPORT THE DOT (No Camera Snapping!) ---
+Sub UpdateBlueDotPosition
+	If CurrentLat = 0 And CurrentLon = 0 Then Return
+	
+	Dim exactTileX As Double = GetTileX(CurrentLon, CurrentZoom)
+	Dim exactTileY As Double = GetTileY(CurrentLat, CurrentZoom)
+	
+	' Calculate Screen Position based on the CURRENT camera center
+	Dim StartCol As Int = CenterTileX - Floor(TilesAcross / 2)
+	Dim StartRow As Int = CenterTileY + Floor(TilesDown / 2)
+	
+	Dim PixelX As Float = (exactTileX - StartCol) * TILE_SIZE
+	Dim PixelY As Float = (StartRow - exactTileY) * TILE_SIZE
+	
+	pnlBlueDot.Left = PixelX - (DOT_SIZE / 2)
+	pnlBlueDot.Top = PixelY - (DOT_SIZE / 2)
+	pnlBlueDot.BringToFront
+End Sub
