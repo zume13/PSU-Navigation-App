@@ -14,8 +14,6 @@ Sub Process_Globals
 	Private TILE_SIZE As Int = 256
 	Private MinTileX As Int, MaxTileX As Int
 	Private MinTileY As Int, MaxTileY As Int
-	Private tmr         As Timer
-	Private tmrFinish   As Timer
 End Sub
 
 Sub Globals
@@ -66,16 +64,19 @@ Sub Globals
 	Private appHeight   As Int
 	Private TileLoadCount As Int
 
-	Private IsDarkMode As Boolean = False
+	Private tmr         As Timer
+	Private tmrFinish   As Timer
+
 	Private ModeIcon As ImageView
 End Sub
 
 Sub Activity_Create(FirstTime As Boolean)
-	' STEP 1 - Load layout first so buttons are initialized
+	Activity.Color = Colors.RGB(142, 30, 44)
 	Activity.LoadLayout("MapPage")
 	ModeIcon.Bitmap = LoadBitmap(File.DirAssets, "sun.png")
 	
 	If TileCache.IsInitialized = False Then TileCache.Initialize
+	
 	TileCache.Clear
 	TileLoadCount = 0
 
@@ -161,6 +162,19 @@ End Sub
 Sub Activity_Resume
 	appWidth  = Activity.Width
 	appHeight = Activity.Height
+'
+'	If Starter.IsDarkMode Then
+'		ModeIcon.Bitmap = LoadBitmap(File.DirAssets, "moon.png")
+'		TopPanel.Color    = Colors.RGB(30, 30, 30)
+'		BottomPanel.Color = Colors.RGB(30, 30, 30)
+'		searchEditText.Color = Colors.White
+'		
+'	Else
+'		ModeIcon.Bitmap = LoadBitmap(File.DirAssets, "sun.png")
+'		TopPanel.Color    = Colors.RGB(255, 255, 255)
+'		BottomPanel.Color = Colors.RGB(255, 255, 255)
+'	End If
+
 End Sub
 
 Sub Activity_Pause(UserClosed As Boolean)
@@ -173,53 +187,61 @@ End Sub
 '===================================
 
 Private Sub ModeIcon_Click
-	IsDarkMode = Not(IsDarkMode)
-    
-	If IsDarkMode Then
-		ModeIcon.Bitmap = LoadBitmap(File.DirAssets, "moon.png")
-		TopPanel.Color    = Colors.RGB(30, 30, 30)
-		BottomPanel.Color = Colors.RGB(30, 30, 30)
-		searchEditText.Color = Colors.White
-		
-	Else
-		ModeIcon.Bitmap = LoadBitmap(File.DirAssets, "sun.png")
-		TopPanel.Color    = Colors.RGB(255, 255, 255)
-		BottomPanel.Color = Colors.RGB(255, 255, 255)
-	End If
+'	Starter.IsDarkMode = Not(Starter.IsDarkMode)
+'    
+'	If Starter.IsDarkMode Then
+'		ModeIcon.Bitmap = LoadBitmap(File.DirAssets, "moon.png")
+'		TopPanel.Color    = Colors.RGB(30, 30, 30)
+'		BottomPanel.Color = Colors.RGB(30, 30, 30)
+'		searchEditText.Color = Colors.White
+'		
+'	Else
+'		ModeIcon.Bitmap = LoadBitmap(File.DirAssets, "sun.png")
+'		TopPanel.Color    = Colors.RGB(255, 255, 255)
+'		BottomPanel.Color = Colors.RGB(255, 255, 255)
+'	End If
 End Sub
 
 Sub GoToPage(NextActivity As Object)
-	Activity.Color = Colors.RGB(156, 28, 28)
+	Activity.Color = Colors.RGB(142, 30, 44)
 	NextPage = NextActivity
 
 	pnlSlide.Initialize("")
 	Activity.AddView(pnlSlide, appWidth - 1, 0, appWidth, appHeight)
-	pnlSlide.Color = Colors.RGB(156, 28, 28)
+	pnlSlide.Color = Colors.RGB(142, 30, 44)
 	pnlSlide.Visible = True
 	pnlSlide.BringToFront
-	pnlSlide.SetLayoutAnimated(300, 0, 0, appWidth, appHeight)
+	pnlSlide.SetLayoutAnimated(800, 0, 0, appWidth, appHeight)
 
-	tmr.Initialize("tmr", 350)
+	tmr.Initialize("tmr", 800)
 	tmr.Enabled = True
 End Sub
 
 Sub tmr_Tick
 	tmr.Enabled = False
+	
+	Dim jo As JavaObject
+	jo.InitializeContext
+	jo.RunMethod("overridePendingTransition", Array(0, 0))
+	
 	StartActivity(NextPage)
+	
+	jo.RunMethod("overridePendingTransition", Array(0, 0))
+	
 	Activity.Finish
 End Sub
 
 Sub GoBack
-	Activity.Color = Colors.RGB(156, 28, 28)
+	Activity.Color = Colors.RGB(142, 30, 44)
 
 	pnlSlide.Initialize("")
 	Activity.AddView(pnlSlide, -appWidth, 0, appWidth, appHeight)
-	pnlSlide.Color = Colors.RGB(156, 28, 28)
+	pnlSlide.Color = Colors.RGB(142, 30, 44)
 	pnlSlide.Visible = True
 	pnlSlide.BringToFront
-	pnlSlide.SetLayoutAnimated(300, 0, 0, appWidth, appHeight)
+	pnlSlide.SetLayoutAnimated(800, 0, 0, appWidth, appHeight)
 
-	tmrFinish.Initialize("tmrFinish", 350)
+	tmrFinish.Initialize("tmrFinish", 800)
 	tmrFinish.Enabled = True
 End Sub
 
@@ -239,7 +261,7 @@ Private Sub QrButton_Touch(Action As Int, X As Float, Y As Float)
 	If Action = 0 Then
 		QrButton.Color = Colors.RGB(183, 43, 60)
 	Else If Action = 1 Then
-		QrButton.Color = Colors.RGB(156, 28, 28)
+		QrButton.Color = Colors.RGB(142, 30, 44)
 		GoToPage(QrScannerPage)
 	End If
 End Sub
@@ -248,7 +270,7 @@ Private Sub MapButton_Touch(Action As Int, X As Float, Y As Float)
 	If Action = 0 Then
 		MapButton.Color = Colors.RGB(183, 43, 60)
 	Else If Action = 1 Then
-		MapButton.Color = Colors.RGB(156, 28, 28)
+		MapButton.Color = Colors.RGB(142, 30, 44)
 	End If
 End Sub
 
@@ -256,7 +278,7 @@ Private Sub BuildingButton_Touch(Action As Int, X As Float, Y As Float)
 	If Action = 0 Then
 		BuildingButton.Color = Colors.RGB(183, 43, 60)
 	Else If Action = 1 Then
-		BuildingButton.Color = Colors.RGB(156, 28, 28)
+		BuildingButton.Color = Colors.RGB(142, 30, 44)
 		GoToPage(PlacesPage)
 	End If
 End Sub

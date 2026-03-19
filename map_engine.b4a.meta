@@ -7,12 +7,12 @@ ModuleBreakpoints0=
 ModuleBreakpoints1=
 ModuleBreakpoints2=
 ModuleBreakpoints3=
-ModuleBreakpoints4=
-ModuleClosedNodes0=
-ModuleClosedNodes1=
-ModuleClosedNodes2=
+ModuleBreakpoints4=ModuleClosedNodes0=7,9
+ModuleClosedNodes1=16
+ModuleClosedNodes2=6
 ModuleClosedNodes3=
 ModuleClosedNodes4=1
-NavigationStack=Main,Globals,22,0,Main,NextB_Click,279,6,Visual Designer,PlacesPage.bal,-100,6,PlacesPage,Activity_Create,41,0,Visual Designer,MapPage.bal,-100,5,PlacesPage,Activity_Pause,30,0,MapPage,Activity_Create,120,0,Main,Activity_KeyPress,107,0
+NavigationStack=Visual Designer,QrPage.bal,-100,1,Main,ShowPageSimple,215,0,Visual Designer,GreetingsPage.bal,-100,6,Visual Designer,MainContainer.bal,-100,2,Main,Activity_KeyPress,219,0,Main,Activity_Resume,200,0,Main,Activity_Create,98,6,Main,Globals,76,0,Main,NextB_Click,262,3,Main,QrButton_Touch,232,4
+>>>>>>> 78bad409c15e77cf34fc80852ca64e4d4885d0e5
 SelectedBuild=0
 VisibleModules=4,1,2,3
