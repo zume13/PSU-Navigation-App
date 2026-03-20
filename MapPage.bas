@@ -76,7 +76,6 @@ Sub Globals
 	
 	Private TileLoadCount As Int
 
-	Private IsDarkMode As Boolean = False
 	Private ModeIcon As ImageView
 	
 	Dim BottomCard As ASDraggableBottomCard
@@ -92,8 +91,29 @@ Sub Globals
 	
 	Dim PinList As List
 	Dim PinDataMap As Map
-	
 
+	Private DirectionB As Panel
+	Private RefocusB As Panel
+	Private CcsB As Panel
+	Private CieB As Panel
+	Private Coe1B As Panel
+	Private Coe2B As Panel
+	Private CsspB As Panel
+	Private FromT As EditText
+	Private PastilB As Panel
+	Private ToT As EditText
+	
+	Private xui As XUI
+	
+	Dim LastEditText As EditText
+	
+	Private CcsL As Label
+	Private CieL As Label
+	Private Coe1 As Label
+	Private Coe2 As Label
+	Private CsspL As Label
+	Private PastilL As Label
+	Private DirectionP As Panel
 End Sub
 
 Sub Activity_Create(FirstTime As Boolean)
@@ -116,7 +136,6 @@ Sub Activity_Create(FirstTime As Boolean)
 	)
 	BottomCard.CornerRadius_Header = 1.5%x
 
-	' ── Header Panel ──────────────────────────────
 	BottomCard.HeaderPanel.Color = Colors.White
 
 	' Drag pill
@@ -150,13 +169,12 @@ Sub Activity_Create(FirstTime As Boolean)
 	btnClose.Background = closeShape
 	BottomCard.HeaderPanel.AddView(btnClose, 96%x - closeBtnSize, 1.5%y, closeBtnSize, closeBtnSize)
 
-	' ── Body Panel ────────────────────────────────
 	BottomCard.BodyPanel.Color = Colors.White
 	Dim pad As Int = 5%x
 	Dim curY As Int = 1%y
 
 	lblCategory.Initialize("")
-	lblCategory.TextSize = 13
+	lblCategory.TextSize = 14
 	lblCategory.Typeface = Typeface.DEFAULT_BOLD
 	lblCategory.TextColor = Colors.ARGB(255, 120, 120, 120)
 	BottomCard.BodyPanel.AddView(lblCategory, pad, curY, 92%x, 3%y)
@@ -171,7 +189,7 @@ Sub Activity_Create(FirstTime As Boolean)
 	curY = curY + 6.0%y
 
 	lblDescription.Initialize("")
-	lblDescription.TextSize = 14
+	lblDescription.TextSize = 16
 	lblDescription.TextColor = Colors.ARGB(255, 60, 60, 60)
 	lblDescription.Gravity = Gravity.TOP
 	BottomCard.BodyPanel.AddView(lblDescription, pad, curY, 92%x, 14%y)
@@ -186,7 +204,7 @@ Sub Activity_Create(FirstTime As Boolean)
 	curY = curY + 4.5%y
 
 	lblRooms.Initialize("")
-	lblRooms.TextSize = 15
+	lblRooms.TextSize = 16
 	lblRooms.TextColor = Colors.ARGB(255, 60, 60, 60)
 	lblRooms.Gravity = Gravity.TOP
 	BottomCard.BodyPanel.AddView(lblRooms, pad, curY, 92%x, 10%y)
@@ -304,6 +322,9 @@ Sub Activity_Create(FirstTime As Boolean)
 	TopPanel.SetLayoutAnimated(500, TopPanel.Left, 45dip, TopPanel.Width, TopPanel.Height)
 	BottomPanel.SetLayoutAnimated(500, BottomPanel.Left, 100%y - BottomPanel.Height, BottomPanel.Width, BottomPanel.Height)
 #End Region
+
+	RefocusB.BringToFront
+	DirectionB.BringToFront
 End Sub
 
 Sub Activity_Resume
@@ -316,6 +337,7 @@ Sub Activity_Pause(UserClosed As Boolean)
 	TileLoadCount = 0
 End Sub
 
+#Region PINS
 Sub AddTestPins
 	Dim b1 As BuildingInfo
 	b1.Initialize
@@ -482,6 +504,8 @@ Sub btnNavigate_Click
 	ToastMessageShow("Navigating to: " & lblBuildingName.Text, False)
 End Sub
 
+#End Region
+
 #Region BOT CARD EVETS
 Sub BottomCard_Open
 	' kapag na trigger ung pagbukas ng sheet
@@ -531,6 +555,73 @@ Sub SetAnimation(InAnim As String, OutAnim As String)
 End Sub
 
 #Region BUTTONS
+Private Sub PastilB_Touch (Action As Int, X As Float, Y As Float)
+	If LastEditText <> Null Then
+		LastEditText.Text = PastilL.Text
+	Else
+		xui.MsgboxAsync("Notice", "Select what to fill in")
+		Return
+	End If
+End Sub
+
+Private Sub CsspB_Touch (Action As Int, X As Float, Y As Float)
+	If LastEditText <> Null Then
+		LastEditText.Text = CsspL.Text
+	Else
+		xui.MsgboxAsync("Notice", "Select what to fill in")
+		Return
+	End If
+End Sub
+
+Private Sub Coe2B_Touch (Action As Int, X As Float, Y As Float)
+	If LastEditText <> Null Then
+		LastEditText.Text = Coe2.Text
+	Else
+		xui.MsgboxAsync("Notice", "Select what to fill in")
+		Return
+	End If
+End Sub
+
+Private Sub Coe1B_Touch (Action As Int, X As Float, Y As Float)
+	If LastEditText <> Null Then
+		LastEditText.Text = Coe1.Text
+	Else
+		xui.MsgboxAsync("Notice", "Select what to fill in")
+		Return
+	End If
+End Sub
+
+Private Sub CieB_Touch (Action As Int, X As Float, Y As Float)
+	If LastEditText <> Null Then
+		LastEditText.Text = CieL.Text
+	Else
+		xui.MsgboxAsync("Notice", "Select what to fill in")
+		Return
+	End If
+End Sub
+
+Private Sub CcsB_Touch (Action As Int, X As Float, Y As Float)
+	If LastEditText <> Null Then 
+		LastEditText.Text = CcsL.Text
+	Else 
+		xui.MsgboxAsync("Notice", "Select what to fill in")
+		Return
+	End If
+End Sub
+
+Private Sub ArrowB_Click
+	DirectionP.SetLayoutAnimated(600, 0, -100%y, 100%x, 90%y)
+End Sub
+
+Private Sub RefocusB_Touch (Action As Int, X As Float, Y As Float)
+	
+End Sub
+
+Private Sub DirectionB_Touch (Action As Int, X As Float, Y As Float)
+	DirectionP.BringToFront
+	DirectionP.SetLayoutAnimated(600, 0, 0, 100%x, 100%y)
+End Sub
+
 Private Sub QrButton_Touch(Action As Int, X As Float, Y As Float)
 	If Action = 0 Then
 		QrButton.Color = Colors.RGB(183, 43, 60)
@@ -566,9 +657,9 @@ Private Sub BuildingButton_Touch(Action As Int, X As Float, Y As Float)
 End Sub
 
 Private Sub ModeIcon_Click
-	IsDarkMode = Not(IsDarkMode)
+	Starter.IsDarkMode = Not(Starter.IsDarkMode)
     
-	If IsDarkMode Then
+	If Starter.IsDarkMode Then
 		ModeIcon.Bitmap = LoadBitmap(File.DirAssets, "moon.png")
 		TopPanel.Color    = Colors.RGB(30, 30, 30)
 		BottomPanel.Color = Colors.RGB(30, 30, 30)
@@ -576,7 +667,7 @@ Private Sub ModeIcon_Click
 	Else
 		ModeIcon.Bitmap = LoadBitmap(File.DirAssets, "sun.png")
 		TopPanel.Color    = Colors.RGB(255, 255, 255)
-		BottomPanel.Color = Colors.RGB(255, 255, 255)
+		BottomPanel.Color = Colors.RGB(142, 30, 44)
 	End If
 End Sub
 
@@ -867,3 +958,41 @@ Sub UpdateBlueDotPosition
 End Sub
 #End Region
 #End Region
+
+#Region EDIT TXT
+Private Sub ToT_EnterPressed
+	If ToT.Text = "" And FromT.Text = "" Then
+		xui.MsgboxAsync("Error", "Fill in the spots")
+	Else If ToT.Text = "" Then 
+		xui.MsgboxAsync("Error", "Select your destination")
+	Else If FromT.Text = "" Then
+		xui.MsgboxAsync("Error", "Select your current location")
+	End If
+End Sub
+
+Private Sub searchEditText_EnterPressed
+	
+End Sub
+
+Private Sub FromT_EnterPressed
+	If ToT.Text = "" And FromT.Text = "" Then
+		xui.MsgboxAsync("Error", "Fill in the spots")
+	Else If ToT.Text = "" Then
+		xui.MsgboxAsync("Error", "Select your destination")
+	Else If FromT.Text = "" Then
+		xui.MsgboxAsync("Error", "Select your current location")
+	End If
+End Sub
+#End Region
+
+Private Sub ToT_FocusChanged (HasFocus As Boolean)
+	If HasFocus Then
+		LastEditText = ToT
+	End If
+End Sub
+
+Private Sub FromT_FocusChanged (HasFocus As Boolean)
+	If HasFocus Then
+		LastEditText = FromT
+	End If
+End Sub

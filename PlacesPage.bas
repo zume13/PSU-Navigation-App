@@ -353,6 +353,13 @@ Sub btnBack_Touch(ViewTag As Object, Action As Int, X As Float, Y As Float, Moti
 End Sub
 #End Region
 Sub Activity_Resume
+    
+	If Starter.IsDarkMode Then
+		pnlCategory.Color = Colors.Black
+		pnlBuildings.Color = Colors.Black
+		
+	Else
+	End If
 End Sub
 
 Sub Activity_Pause(UserClosed As Boolean)
