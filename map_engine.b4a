@@ -1,24 +1,34 @@
 ﻿Build1=Default,b4a.example
-File1=city.png
+File1=dhvsu_map_test.mbtiles
 File10=PlacesPage.bal
-File11=qr-code.png
+File11=Qr.bal
 File12=QrPage.bal
-File13=searchIcon.png
-File14=sun.png
-File2=dhvsu_map_test.mbtiles
+File13=red-building.png
+File14=red-map.png
+File15=red-qr.png
+File16=sun.png
+File17=white-building.png
+File18=white-map.png
+File19=white-qr.png
+File2=Greet.bal
 File3=GreetingsPage.bal
 File4=Intro.png
 File5=logo.png
-File6=MainContainer.bal
+File6=Map.bal
 File7=MapPage.bal
-File8=marker.png
-File9=moon.png
+File8=moon.png
+File9=Places.bal
 FileGroup1=Default Group
 FileGroup10=Default Group
 FileGroup11=Default Group
 FileGroup12=Default Group
 FileGroup13=Default Group
 FileGroup14=Default Group
+FileGroup15=Default Group
+FileGroup16=Default Group
+FileGroup17=Default Group
+FileGroup18=Default Group
+FileGroup19=Default Group
 FileGroup2=Default Group
 FileGroup3=Default Group
 FileGroup4=Default Group
@@ -29,20 +39,21 @@ FileGroup8=Default Group
 FileGroup9=Default Group
 Group=Default Group
 Library1=core
-Library2=gps
-Library3=javaobject
-Library4=reflection
-Library5=runtimepermissions
-Library6=sql
-Library7=xui
-Library8=fusedlocationprovider
-ManifestCode='This code will be applied to the manifest file during compilation.~\n~'You do not need to modify it in most cases.~\n~'See this link for for more information: https://www.b4x.com/forum/showthread.php?p=78136~\n~AddManifestText(~\n~<uses-sdk android:minSdkVersion="21" android:targetSdkVersion="35"/>~\n~<supports-screens android:largeScreens="true" ~\n~    android:normalScreens="true" ~\n~    android:smallScreens="true" ~\n~    android:anyDensity="true"/>)~\n~SetApplicationAttribute(android:icon, "@drawable/icon")~\n~SetApplicationAttribute(android:label, "$LABEL$")~\n~CreateResourceFromFile(Macro, Themes.LightTheme)~\n~~\n~SetApplicationAttribute(android:theme, "@android:style/Theme.NoTitleBar")~\n~SetApplicationAttribute(android:windowDisablePreview, "true")~\n~~\n~'End of default text.~\n~~\n~AddPermission(android.permission.ACCESS_FINE_LOCATION)~\n~AddPermission(android.permission.ACCESS_COARSE_LOCATION)~\n~~\n~AddApplicationText(~\n~  <meta-data~\n~    android:name="com.google.android.gms.version"~\n~    android:value="@integer/google_play_services_version" />~\n~)
+Library2=fusedlocationprovider
+Library3=gps
+Library4=javaobject
+Library5=reflection
+Library6=runtimepermissions
+Library7=sql
+Library8=xui
+Library9=asdraggablebottomcard
+ManifestCode='This code will be applied to the manifest file during compilation.~\n~'You do not need to modify it in most cases.~\n~'See this link for for more information: https://www.b4x.com/forum/showthread.php?p=78136~\n~AddManifestText(~\n~<uses-sdk android:minSdkVersion="21" android:targetSdkVersion="35"/>~\n~<supports-screens android:largeScreens="true" ~\n~    android:normalScreens="true" ~\n~    android:smallScreens="true" ~\n~    android:anyDensity="true"/>)~\n~SetApplicationAttribute(android:icon, "@drawable/icon")~\n~SetApplicationAttribute(android:label, "$LABEL$")~\n~CreateResourceFromFile(Macro, Themes.LightTheme)~\n~'End of default text.~\n~~\n~AddPermission(android.permission.ACCESS_FINE_LOCATION)~\n~AddPermission(android.permission.ACCESS_COARSE_LOCATION)~\n~~\n~AddApplicationText(~\n~  <meta-data~\n~    android:name="com.google.android.gms.version"~\n~    android:value="@integer/google_play_services_version" />~\n~)
 Module1=MapPage
 Module2=PlacesPage
 Module3=QrScannerPage
 Module4=Starter
-NumberOfFiles=14
-NumberOfLibraries=8
+NumberOfFiles=19
+NumberOfLibraries=9
 NumberOfModules=4
 Version=13.4
 @EndOfDesignText@
@@ -64,17 +75,13 @@ Sub Process_Globals
 End Sub
 
 Sub Globals
-	Private NextPage   As Object
-	Private pnlSlide   As Panel
 	Private appWidth   As Int
 	Private appHeight  As Int
-	Private tmr        As Timer
-	Private tmrFinish  As Timer
 End Sub
 
 Sub Activity_Create(FirstTime As Boolean)
 	Activity.Color = Colors.RGB(156, 28, 28)
-	Activity.LoadLayout("GreetingsPage")
+	Activity.LoadLayout("Greet")
 End Sub
 
 Sub Activity_Resume
@@ -85,68 +92,24 @@ End Sub
 Sub Activity_Pause(UserClosed As Boolean)
 End Sub
 
-'===================================
-' NAVIGATION
-'===================================
-
-Sub GoToPage(NextActivity As Object)
-	NextPage = NextActivity
-
-	Dim i As Int
-	For i = 0 To Activity.NumberOfViews - 1
-		Activity.GetView(i).Visible = False
-	Next
-
-	pnlSlide.Initialize("")
+Sub SetAnimation(InAnim As String, OutAnim As String)
+	Dim r As Reflector
+	Dim package As String
+	Dim inAnimID, outAnimID As Int
     
-	' Start at appWidth - 1 instead of appWidth
-	Activity.AddView(pnlSlide, appWidth - 1, 0, appWidth, appHeight)
-	pnlSlide.Color = Colors.RGB(142, 30, 43) 
-	pnlSlide.Visible = True
-	pnlSlide.BringToFront
-
-	pnlSlide.SetLayoutAnimated(500, 0, 0, appWidth, appHeight)
-
-	tmr.Initialize("tmr", 550)
-	tmr.Enabled = True
+	package = r.GetStaticField("anywheresoftware.b4a.BA", "packageName")
+	inAnimID = r.GetStaticField(package & ".R$anim", InAnim)
+	outAnimID = r.GetStaticField(package & ".R$anim", OutAnim)
+    
+	r.Target = r.GetActivity
+	r.RunMethod4("overridePendingTransition", Array As Object(inAnimID, outAnimID), Array As String("java.lang.int", "java.lang.int"))
 End Sub
-Sub tmr_Tick
-	tmr.Enabled = False
-	StartActivity(NextPage)
-	Activity.Finish
-End Sub
-
-Sub GoBack
-	Activity.Color = Colors.RGB(156, 28, 28)
-
-	pnlSlide.Initialize("")
-	Activity.AddView(pnlSlide, -appWidth, 0, appWidth, appHeight)
-	pnlSlide.Color = Colors.RGB(156, 28, 28)
-	pnlSlide.Visible = True
-
-	' Animate from left to center over 1000ms
-	pnlSlide.SetLayoutAnimated(1000, 0, 0, appWidth, appHeight)
-
-	tmrFinish.Initialize("tmrFinish", 1100)
-	tmrFinish.Enabled = True
-End Sub
-
-Sub tmrFinish_Tick
-	tmrFinish.Enabled = False
-	Activity.Finish
-End Sub
-
-'===================================
-' BUTTON CLICKS
-'===================================
 
 Private Sub NextB_Click
-	GoToPage(MapPage)
+	StartActivity(MapPage)
+	SetAnimation("slide_in_right", "slide_out_left")
 End Sub
 
-'===================================
-' BACK BUTTON
-'===================================
 
 Sub Activity_KeyPress(KeyCode As Int) As Boolean
 	If KeyCode = KeyCodes.KEYCODE_BACK Then
