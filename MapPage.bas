@@ -11,11 +11,15 @@ Version=13.4
 
 Sub Process_Globals
 	Private sql1 As SQL
+	Private sqlData As SQL
+	
 	Private TILE_SIZE As Int = 256
 	Private MinTileX As Int, MaxTileX As Int
 	Private MinTileY As Int, MaxTileY As Int
-	Private tmr         As Timer
-	Private tmrFinish   As Timer
+
+	Type MapNode (Lat As Double, Lon As Double, X22 As Double, Y22 As Double)
+	
+	Private router As Pathfinder
 	
 	Type BuildingInfo( _
 		Name As String, _
@@ -26,43 +30,75 @@ Sub Process_Globals
 		Lat As Double, _
 		Lon As Double _
 	)
+	
 	Dim SelectedPinTag As String
 End Sub
 
 Sub Globals
-	Private pnlCanvas As Panel
-	Private pnlMapContainer As Panel
-    
-	Private Const MAX_COLS As Int = 10
-	Private Const MAX_ROWS As Int = 20
-	Private TileViews(MAX_COLS, MAX_ROWS) As ImageView
+	' --- THE LAYER SYSTEM ---
+	Private pnlCanvasA As Panel
+	Private pnlTouch As Panel  ' The fixed invisible glass that tracks your finger
+	
+	' --- THE TV WALL (HD Grid) ---
+	Private Const MAX_COLS As Int = 15
+	Private Const MAX_ROWS As Int = 25
+	Private TileViewsA(MAX_COLS, MAX_ROWS) As ImageView
 	Private TilesAcross As Int
 	Private TilesDown As Int
-    
-	Private CurrentZoom As Int = 22
-	Private CenterTileX As Int
-	Private CenterTileY As Int
-    
+	
+	' --- MEMORY CACHE ---
+	Private TileCache As Map
+	Private ZoomBoundsCache As Map
+	
+	' --- CONTINUOUS CAMERA CACHE ---
+	Private CameraZoom As Double
+	Private CameraCenterX As Double
+	Private CameraCenterY As Double
+	Private InitialCameraZoom As Double
+	Private InitialWorldX As Double
+	Private InitialWorldY As Double
+	Private LastRenderedZoom As Int = -1
+	Private LastRenderedCenterX As Int = -999999
+	Private LastRenderedCenterY As Int = -999999
+	Private CurrentPanelScale As Float = -1
+	
+	' --- TOUCH & GESTURE CACHE ---
 	Private LastTouchX As Float
 	Private LastTouchY As Float
-    
-	Private TileCache As Map
-	Private BufferX As Int
-	Private BufferY As Int
-    
 	Private IsPinching As Boolean = False
 	Private InitialPinchDistance As Float = 0
-	Private CurrentScale As Float = 1.0
-	Private ZoomJustTriggered As Boolean = False
-    
+	Private PinchMidX As Float
+	Private PinchMidY As Float
+	Private IgnoreNextDrag As Boolean = False
+	Private IsUserTouching As Boolean = False
+
+	' --- ROUTING CACHE ---
+	Private pnlRoute As Panel
+	Private cvsRoute As Canvas
+	Private CurrentRoute As List
+	Private RouteBaseX As Double = -999999
+	Private RouteBaseY As Double = -999999
+	Private RouteBaseZoom As Double = -1
+	Private RoutePanelScale As Float = 1.0
+	
+	' --- TEST UI ---
+	Private pnlTestUI As Panel
+	Private txtStart As EditText
+	Private txtEnd As EditText
+	Private btnTestRoute As Button
+
+	' --- GPS & BLUE DOT ---
 	Private flp As FusedLocationProvider
 	Private rp As RuntimePermissions
-    
 	Private pnlBlueDot As Panel
 	Private DOT_SIZE As Int = 16dip
 	Private CurrentLat As Double = 0
 	Private CurrentLon As Double = 0
-	Private FirstSnapDone As Boolean = False
+	Private DotX22 As Double = 0
+	Private DotY22 As Double = 0
+	
+	' --- MAP PINS CACHE ---
+	Private ActivePins As List
     
 	Private BuildingButton As Panel
 	Private MapButton As Panel
@@ -228,90 +264,150 @@ Sub Activity_Create(FirstTime As Boolean)
 #Region MAP INIT
 	If TileCache.IsInitialized = False Then TileCache.Initialize
 	TileCache.Clear
-	TileLoadCount = 0
+	
+	If ZoomBoundsCache.IsInitialized = False Then ZoomBoundsCache.Initialize
+	
+	' -----------------------------
+	' DATABASE INIT
+	' -----------------------------
+	If File.Exists(File.DirInternal, "psu_map.mbtiles") = False Then
+		File.Copy(File.DirAssets, "psu_map.mbtiles", File.DirInternal, "psu_map.mbtiles")
+	End If
+	
+	' --- FORCE OVERWRITE DURING DEVELOPMENT ---
+	' This guarantees you always have the newest database from your Files tab!
+	File.Copy(File.DirAssets, "psu_data.db", File.DirInternal, "psu_data.db")
+	
+	If sql1.IsInitialized = False Then
+		sql1.Initialize(File.DirInternal, "psu_map.mbtiles", False)
+	End If
+	
+	If sqlData.IsInitialized = False Then
+		sqlData.Initialize(File.DirInternal, "psu_data.db", False)
+	End If
+	
+	router.Initialize(sqlData)
+	
+	' -----------------------------
+	' PRE-CACHE BOUNDS FOR ALL ZOOMS
+	' -----------------------------
+	ZoomBoundsCache.Clear
+	For z = 18 To 22
+		Dim rsZ As ResultSet = sql1.ExecQuery2( _
+			"SELECT MIN(tile_column), MAX(tile_column), MIN(tile_row), MAX(tile_row) FROM tiles WHERE zoom_level = ?", _
+			Array As String(z))
+		If rsZ.NextRow Then
+			Dim bz(4) As Int
+			bz(0) = rsZ.GetInt2(0)
+			bz(1) = rsZ.GetInt2(1)
+			bz(2) = rsZ.GetInt2(2)
+			bz(3) = rsZ.GetInt2(3)
+			ZoomBoundsCache.Put(z, bz)
+		End If
+		rsZ.Close
+	Next
+	
+	' -----------------------------
+	' SCREEN TILE COVERAGE
+	' -----------------------------
+	TilesAcross = Ceil((100%x / TILE_SIZE) * 1.5) + 2
+	TilesDown = Ceil((100%y / TILE_SIZE) * 1.5) + 2
 
-	TilesAcross = Ceil(100%x / TILE_SIZE) + 2
-	TilesDown = Ceil(100%y / TILE_SIZE) + 2
-    
-	pnlMapContainer.Initialize("")
-	pnlMapContainer.Color = Colors.RGB(238, 235, 225)
-	Activity.AddView(pnlMapContainer, 0, 0, 100%x, 100%y)
-    
-	pnlCanvas.Initialize("")
-	pnlCanvas.Color = Colors.RGB(238, 235, 225)
-	pnlMapContainer.AddView(pnlCanvas, -TILE_SIZE, -TILE_SIZE, TilesAcross * TILE_SIZE, TilesDown * TILE_SIZE)
-    
+	If TilesAcross > MAX_COLS Then TilesAcross = MAX_COLS
+	If TilesDown > MAX_ROWS Then TilesDown = MAX_ROWS
+	
+	' -----------------------------
+	' MAP LAYER A
+	' -----------------------------
+	pnlCanvasA.Initialize("")
+	pnlCanvasA.Color = Colors.RGB(238, 235, 225)
+	Activity.AddView(pnlCanvasA, -TILE_SIZE, -TILE_SIZE, TilesAcross * TILE_SIZE, TilesDown * TILE_SIZE)
+	
 	For col = 0 To TilesAcross - 1
 		For row = 0 To TilesDown - 1
-			TileViews(col, row).Initialize("")
-			TileViews(col, row).Gravity = Gravity.FILL
-			pnlCanvas.AddView(TileViews(col, row), col * TILE_SIZE, row * TILE_SIZE, TILE_SIZE, TILE_SIZE)
+			TileViewsA(col, row).Initialize("")
+			TileViewsA(col, row).Gravity = Gravity.FILL
+			pnlCanvasA.AddView(TileViewsA(col, row), col * TILE_SIZE, row * TILE_SIZE, TILE_SIZE, TILE_SIZE)
 		Next
 	Next
-    
+	
+	' -----------------------------
+	' ROUTE LAYER
+	' -----------------------------
+	pnlRoute.Initialize("")
+	pnlRoute.Color = Colors.Transparent
+	Activity.AddView(pnlRoute, 0, 0, 100%x, 100%y)
+	cvsRoute.Initialize(pnlRoute)
+	CurrentRoute.Initialize
+	
+	' -----------------------------
+	' BLUE DOT
+	' -----------------------------
 	pnlBlueDot.Initialize("")
 	Dim cd As ColorDrawable
 	cd.Initialize2(Colors.Blue, DOT_SIZE / 2, 2dip, Colors.White)
 	pnlBlueDot.Background = cd
 	pnlBlueDot.Visible = False
-	pnlCanvas.AddView(pnlBlueDot, 0, 0, DOT_SIZE, DOT_SIZE)
-    
+	Activity.AddView(pnlBlueDot, 0, 0, DOT_SIZE, DOT_SIZE)
+	
+	' -----------------------------
+	' TOUCH LAYER
+	' -----------------------------
+	pnlTouch.Initialize("")
+	Activity.AddView(pnlTouch, 0, 0, 100%x, 100%y)
+	
+	Dim r As Reflector
+	r.Target = pnlTouch
+	r.SetOnTouchListener("MapTouch")
+	
+	' -----------------------------
+	' MAP PINS
+	' -----------------------------
+	LoadFacilityPins
+	
+	' -----------------------------
+	' INITIAL CAMERA SETTINGS
+	' -----------------------------
+	CameraZoom = 22.0
+	CameraCenterX = GetTileX(120.655083, 22)
+	CameraCenterY = GetTileY(14.997889, 22)
+	
+	RenderCamera
+	
+	' -----------------------------
+	' TEST UI
+	' -----------------------------
+'	pnlTestUI.Initialize("")
+'	pnlTestUI.Color = Colors.ARGB(220, 255, 255, 255)
+'	Activity.AddView(pnlTestUI, 10dip, 10dip, 100%x - 20dip, 60dip)
+'	
+'	txtStart.Initialize("")
+'	txtStart.Hint = "Fac ID 1"
+'	txtStart.InputType = txtStart.INPUT_TYPE_NUMBERS
+'	txtStart.TextColor = Colors.Black
+'	pnlTestUI.AddView(txtStart, 10dip, 10dip, 80dip, 40dip)
+'	
+'	txtEnd.Initialize("")
+'	txtEnd.Hint = "Fac ID 2"
+'	txtEnd.InputType = txtEnd.INPUT_TYPE_NUMBERS
+'	txtEnd.TextColor = Colors.Black
+'	pnlTestUI.AddView(txtEnd, 100dip, 10dip, 80dip, 40dip)
+'	
+'	btnTestRoute.Initialize("btnTestRoute")
+'	btnTestRoute.Text = "DRAW"
+'	pnlTestUI.AddView(btnTestRoute, 190dip, 10dip, 80dip, 40dip)
+	
+	' -----------------------------
+	' GPS PERMISSIONS (Placed last to prevent UI blocking)
+	' -----------------------------
 	rp.CheckAndRequest(rp.PERMISSION_ACCESS_FINE_LOCATION)
 	Wait For Activity_PermissionResult (Permission As String, Result As Boolean)
+	
 	If Result Then
 		flp.Initialize("flp")
 		flp.Connect
 	Else
 		ToastMessageShow("Location permission denied. Blue Dot disabled.", True)
-	End If
-
-	Dim r As Reflector
-	r.Target = pnlMapContainer
-	r.SetOnTouchListener("maptouch")
-
-	' Bring nav panels above map
-	BottomPanel.BringToFront
-	TopPanel.BringToFront
-
-	If File.Exists(File.DirInternal, "dhvsu_map_test.mbtiles") = False Then
-		File.Copy(File.DirAssets, "dhvsu_map_test.mbtiles", File.DirInternal, "dhvsu_map_test.mbtiles")
-	End If
-	If sql1.IsInitialized = False Then
-		sql1.Initialize(File.DirInternal, "dhvsu_map_test.mbtiles", False)
-	End If
-    
-	Dim rs As ResultSet = sql1.ExecQuery2("SELECT MIN(tile_column), MAX(tile_column), MIN(tile_row), MAX(tile_row) FROM tiles WHERE zoom_level = ?", Array As String(CurrentZoom))
-	If rs.NextRow Then
-		MinTileX = rs.GetInt2(0)
-		MaxTileX = rs.GetInt2(1)
-		MinTileY = rs.GetInt2(2)
-		MaxTileY = rs.GetInt2(3)
-		CenterTileX = MinTileX + (MaxTileX - MinTileX) / 2
-		CenterTileY = MinTileY + (MaxTileY - MinTileY) / 2
-		BufferX = Floor(Ceil(100%x / TILE_SIZE) / 2)
-		BufferY = Floor(Ceil(100%y / TILE_SIZE) / 2)
-	End If
-	rs.Close
-    
-	Dim exactTileX As Double = GetTileX(120.655083, CurrentZoom)
-	Dim exactTileY As Double = GetTileY(14.997889, CurrentZoom)
-	CenterTileX = Floor(exactTileX)
-	CenterTileY = Floor(exactTileY)
-	pnlCanvas.Left = -TILE_SIZE
-	pnlCanvas.Top = -TILE_SIZE
-	RenderGrid
-
-	' Initialize pin storage then place test pins
-	PinList.Initialize
-	PinDataMap.Initialize
-	AddTestPins
-	BottomCard.DarkPanel.BringToFront
-	If SelectedPinTag <> "" Then
-		If PinDataMap.ContainsKey("pin_" & SelectedPinTag) Then
-			Dim b As BuildingInfo = PinDataMap.Get("pin_" & SelectedPinTag)
-			OnMapPinClick(b)
-		End If
-		SelectedPinTag = ""
 	End If
 #End Region
 
@@ -323,6 +419,8 @@ Sub Activity_Create(FirstTime As Boolean)
 	BottomPanel.SetLayoutAnimated(500, BottomPanel.Left, 100%y - BottomPanel.Height, BottomPanel.Width, BottomPanel.Height)
 #End Region
 
+	TopPanel.BringToFront
+	BottomPanel.BringToFront
 	RefocusB.BringToFront
 	DirectionB.BringToFront
 End Sub
@@ -335,189 +433,19 @@ End Sub
 Sub Activity_Pause(UserClosed As Boolean)
 	TileCache.Clear
 	TileLoadCount = 0
+	ActivePins.Clear
 End Sub
-
-#Region PINS
-Sub AddTestPins
-	Dim b1 As BuildingInfo
-	b1.Initialize
-	b1.Category    = "Buildings"
-	b1.Name        = "College of Computing Studies"
-	b1.Description = "The university's central hub for technology, innovation, and digital learning."
-	b1.Rooms       = Array As String("Floor 1: CS 101, CS 102, CS 103, CS 104, CS 105, Toilet Room", _
-	                                  "Floor 2: CS 201, CS 202, CS 203, Faculty Room")
-	b1.PhotoFile   = "ccs.jpg"
-	b1.Lat         = 14.997889
-	b1.Lon         = 120.655083
-	AddPin(b1, "CCS")
-
-	Dim b2 As BuildingInfo
-	b2.Initialize
-	b2.Category    = "Buildings"
-	b2.Name        = "College of Engineering and Architecture"
-	b2.Description = "Houses the College of Engineering and Architecture programs."
-	b2.Rooms       = Array As String("Floor 1: Lecture Hall A, Lecture Hall B", _
-	                                  "Floor 2: Drawing Room, Faculty Office")
-	b2.PhotoFile   = "coe.jpg"
-	b2.Lat         = 14.998100
-	b2.Lon         = 120.655300
-	AddPin(b2, "COE")
-
-	Dim b3 As BuildingInfo
-	b3.Initialize
-	b3.Category    = "Buildings"
-	b3.Name        = "College of Industrial Technology"
-	b3.Description = "Focused on technical and industrial education."
-	b3.Rooms       = Array As String("Floor 1: Shop 1, Shop 2", _
-	                                  "Floor 2: Faculty Room")
-	b3.PhotoFile   = "cit.jpg"
-	b3.Lat         = 14.997700
-	b3.Lon         = 120.655500
-	AddPin(b3, "CIT")
-
-	Dim b4 As BuildingInfo
-	b4.Initialize
-	b4.Category    = "Buildings"
-	b4.Name        = "Auditorium"
-	b4.Description = "Main venue for university events and ceremonies."
-	b4.Rooms       = Array As String("Ground Floor: Main Hall, Stage")
-	b4.PhotoFile   = "aud.jpg"
-	b4.Lat         = 14.998300
-	b4.Lon         = 120.654900
-	AddPin(b4, "AUD")
-
-	Dim b5 As BuildingInfo
-	b5.Initialize
-	b5.Category    = "Buildings"
-	b5.Name        = "Administration Building"
-	b5.Description = "Central administration and records office."
-	b5.Rooms       = Array As String("Floor 1: Registrar, Cashier", _
-	                                  "Floor 2: Office of the President")
-	b5.PhotoFile   = "adm.jpg"
-	b5.Lat         = 14.997600
-	b5.Lon         = 120.654800
-	AddPin(b5, "ADM")
-
-	Dim b6 As BuildingInfo
-	b6.Initialize
-	b6.Category    = "Buildings"
-	b6.Name        = "Library"
-	b6.Description = "University library with digital and print resources."
-	b6.Rooms       = Array As String("Floor 1: Circulation, Reading Area", _
-	                                  "Floor 2: Archive")
-	b6.PhotoFile   = "lib.jpg"
-	b6.Lat         = 14.998000
-	b6.Lon         = 120.655100
-	AddPin(b6, "LIB")
-End Sub
-
-Sub AddPin(building As BuildingInfo, tag As String) 'tag is ung name name ng building or initials
-	Dim pinSize As Int = 24dip
-	Dim pin As Panel
-	pin.Initialize("pin_" & tag)
-	Dim pinShape As ColorDrawable
-	pinShape.Initialize(Colors.ARGB(255, 160, 30, 45), pinSize / 2)
-	pin.Background = pinShape
-	pin.Tag = "pin_" & tag
-	pnlCanvas.AddView(pin, 0, 0, pinSize, pinSize)
-
-	' Position on map
-	Dim StartCol As Int = CenterTileX - Floor(TilesAcross / 2)
-	Dim StartRow As Int = CenterTileY + Floor(TilesDown / 2)
-	Dim etx As Double = GetTileX(building.Lon, CurrentZoom)
-	Dim ety As Double = GetTileY(building.Lat, CurrentZoom)
-	pin.Left = (etx - StartCol) * TILE_SIZE - pinSize / 2
-	pin.Top  = (StartRow - ety) * TILE_SIZE - pinSize / 2
-
-	' Attach touch listener
-	Dim r As Reflector
-	r.Target = pin
-	r.SetOnTouchListener("pin_Touch")
-
-	PinList.Add(pin)
-	PinDataMap.Put("pin_" & tag, building)
-End Sub
-
-Sub pin_Touch(ViewTag As Object, Action As Int, X As Float, Y As Float, MotionEvent As Object) As Boolean
-	If Action = 1 Then  ' ACTION_UP
-		Dim tag As String = ViewTag
-		If PinDataMap.ContainsKey(tag) Then
-			Dim building As BuildingInfo = PinDataMap.Get(tag)
-			OnMapPinClick(building)
-		End If
-	End If
-	Return True
-End Sub
-
-Sub UpdateAllPinPositions
-	Dim pinSize As Int = 24dip
-	Dim StartCol As Int = CenterTileX - Floor(TilesAcross / 2)
-	Dim StartRow As Int = CenterTileY + Floor(TilesDown / 2)
-	For i = 0 To PinList.Size - 1
-		Dim pin As Panel = PinList.Get(i)
-		Dim tag As String = pin.Tag
-		If PinDataMap.ContainsKey(tag) Then
-			Dim b As BuildingInfo = PinDataMap.Get(tag)
-			Dim etx As Double = GetTileX(b.Lon, CurrentZoom)
-			Dim ety As Double = GetTileY(b.Lat, CurrentZoom)
-			pin.Left = (etx - StartCol) * TILE_SIZE - pinSize / 2
-			pin.Top  = (StartRow - ety) * TILE_SIZE - pinSize / 2
-		End If
-	Next
-End Sub
-
-Sub OnMapPinClick(building As BuildingInfo)
-	lblCategory.Text     = building.Category
-	lblBuildingName.Text = building.Name
-	lblDescription.Text  = building.Description
-
-	' Build bullet room list
-	Dim roomText As String = ""
-	For i = 0 To building.Rooms.Length - 1
-		roomText = roomText & Chr(8226) & "  " & building.Rooms(i)
-		If i < building.Rooms.Length - 1 Then roomText = roomText & CRLF
-	Next
-	lblRooms.Text = roomText
-
-	' Load photo from assets
-	If building.PhotoFile <> "" Then
-		If File.Exists(File.DirAssets, building.PhotoFile) Then
-			imgPhoto.Bitmap = LoadBitmap(File.DirAssets, building.PhotoFile)
-		End If
-	End If
-
-	' Hide navbar then show sheet
-	If BottomCard.IsOpen Then
-		' Sheet already visible — content swaps in place
-	Else
-		BottomPanel.Visible = False
-		TopPanel.Visible = False
-		BottomCard.ExpandHalf
-	End If
-End Sub
-
-Sub btnClose_Click
-	BottomCard.Hide(False)
-End Sub
-
-Sub btnNavigate_Click
-	ToastMessageShow("Navigating to: " & lblBuildingName.Text, False)
-End Sub
-
-#End Region
 
 #Region BOT CARD EVETS
 Sub BottomCard_Open
 	' kapag na trigger ung pagbukas ng sheet
 	BottomPanel.Visible = False
 	TopPanel.Visible = False
-	pnlMapContainer.Enabled = False
 End Sub
 
 Sub BottomCard_Opened
 	' kapag nag bukas ung sheet
 	Log("Sheet is fully open")
-	pnlMapContainer.Enabled = False
 End Sub
 
 Sub BottomCard_Close
@@ -533,7 +461,6 @@ Sub BottomCard_Closed
 	BottomPanel.Top = 100%y
 	TopPanel.SetLayoutAnimated(400, TopPanel.Left, 45dip, TopPanel.Width, TopPanel.Height)
 	BottomPanel.SetLayoutAnimated(400, BottomPanel.Left, 100%y - BottomPanel.Height, BottomPanel.Width, BottomPanel.Height)
-	pnlMapContainer.Enabled = True
 End Sub
 
 Sub BottomCard_VisibleBodyHeightChanged(height As Double)
@@ -680,53 +607,267 @@ End Sub
 #End Region
 
 #Region MAP THINGS
-#Region MAP ENGINE
-Sub LoadTile(Z As Int, X As Int, Y As Int) As Bitmap
-	Dim TileKey As String = Z & "_" & X & "_" & Y
-	If TileCache.ContainsKey(TileKey) Then Return TileCache.Get(TileKey)
-    
-	TileLoadCount = TileLoadCount + 1
-	If TileLoadCount >= 10 Then
-		TileCache.Clear
-		TileLoadCount = 0
-		Log("Cache cleared at 10 tiles")
-	End If
-    
-	Dim bmp As Bitmap
-	Dim rs As ResultSet = sql1.ExecQuery2("SELECT tile_data FROM tiles WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?", Array As String(Z, X, Y))
-    
-	If rs.NextRow Then
-		Try
-			Dim data() As Byte = rs.GetBlob2(0)
-			Dim InStream As InputStream
-			InStream.InitializeFromBytesArray(data, 0, data.Length)
-			bmp.Initialize2(InStream)
-			InStream.Close
-			TileCache.Put(TileKey, bmp)
-		Catch
-			Log("Tile load failed: " & LastException.Message)
-			TileCache.Clear
-			TileLoadCount = 0
-			rs.Close
-			Return Null
-		End Try
-		rs.Close
-		Return bmp
-	End If
+
+Sub LoadFacilityPins
+	ActivePins.Initialize
+	
+	' 1. Pre-load your icons into memory
+	Dim bmpBuilding As Bitmap = LoadBitmap(File.DirAssets, "building_icon_pin.png")
+	Dim bmpFood As Bitmap = LoadBitmap(File.DirAssets, "food_icon_pin.png")
+	Dim bmpDefault As Bitmap = bmpBuilding
+	
+	' 2. Query the database (Filter out Priority 0 entirely to save memory!)
+	Dim rs As ResultSet = sqlData.ExecQuery("SELECT Category, Name, Lat, Lon, Priority FROM Facilities WHERE Priority > 0")
+	
+	Do While rs.NextRow
+		Dim cat As String = rs.GetString("Category")
+		Dim facName As String = rs.GetString("Name")
+		Dim facLat As Double = rs.GetDouble("Lat")
+		Dim facLon As Double = rs.GetDouble("Lon")
+		Dim priorityLvl As Int = rs.GetInt("Priority")
+		
+		' 3. Choose the correct icon based on Category
+		Dim selectedIcon As Bitmap
+		If cat = "Building" Then
+			selectedIcon = bmpBuilding
+		Else If cat = "Food" Then
+			selectedIcon = bmpFood
+		Else
+			selectedIcon = bmpDefault
+		End If
+		
+		' 4. Translate Priority Number into Dual Zoom Thresholds
+		Dim pinZoom As Double
+		Dim nameZoom As Double
+		
+		If priorityLvl = 1 Then
+			pinZoom = 17.5
+			nameZoom = 19
+		Else If priorityLvl = 2 Then
+			pinZoom = 19
+			nameZoom = 20.5
+		Else If priorityLvl = 3 Then
+			pinZoom = 20.5
+			nameZoom = 21
+		Else ' Priority 4
+			pinZoom = 21
+			nameZoom = 21.5
+		End If
+		
+		' 5. Spawn the pin with BOTH Thresholds
+		Dim pin As MapPin
+		pin.Initialize(GetTileX(facLon, 22), GetTileY(facLat, 22), facName, selectedIcon, pinZoom, nameZoom)
+		Activity.AddView(pin.BasePanel, 0, 0, 150dip, 60dip)
+		ActivePins.Add(pin)
+	Loop
+	
 	rs.Close
-	Return Null
+	Log("Successfully loaded " & ActivePins.Size & " facility pins from the database!")
 End Sub
 
-Sub RenderGrid
-	Dim StartCol As Int = CenterTileX - Floor(TilesAcross / 2)
-	Dim StartRow As Int = CenterTileY + Floor(TilesDown / 2)
-    
+' ==============================================================================
+' 1. TOUCH & GESTURE ENGINE
+' ==============================================================================
+Sub MapTouch (ViewTag As Object, Action As Int, X As Float, Y As Float, MotionEvent As Object) As Boolean 'ignore
+	Try
+		Dim event As JavaObject = MotionEvent
+		Dim pointerCount As Int = event.RunMethod("getPointerCount", Null)
+		Dim actionMasked As Int = Bit.And(Action, 255)
+		
+		If actionMasked = 0 Or actionMasked = 5 Then IsUserTouching = True
+		If actionMasked = 1 Or actionMasked = 3 Then IsUserTouching = False
+		
+		' --- PINCH ZOOM ---
+		If pointerCount = 2 Then
+			Dim x1 As Float = event.RunMethod("getX", Array As Object(0))
+			Dim y1 As Float = event.RunMethod("getY", Array As Object(0))
+			Dim x2 As Float = event.RunMethod("getX", Array As Object(1))
+			Dim y2 As Float = event.RunMethod("getY", Array As Object(1))
+			
+			Dim distance As Float = Sqrt(Power(x1 - x2, 2) + Power(y1 - y2, 2))
+			PinchMidX = (x1 + x2) / 2
+			PinchMidY = (y1 + y2) / 2
+			
+			If actionMasked = 5 Or IsPinching = False Then
+				IsPinching = True
+				InitialPinchDistance = distance
+				InitialCameraZoom = CameraZoom
+				
+				Dim worldPerTile As Double = WorldTilesPerScreenTile
+				InitialWorldX = CameraCenterX + (((PinchMidX - (100%x / 2)) / TILE_SIZE) * worldPerTile)
+				InitialWorldY = CameraCenterY - (((PinchMidY - (100%y / 2)) / TILE_SIZE) * worldPerTile)
+				
+				Return True
+			End If
+			
+			If actionMasked = 2 And InitialPinchDistance > 0 Then
+				Dim zoomDelta As Double = Logarithm(distance / InitialPinchDistance, 2)
+				CameraZoom = InitialCameraZoom + zoomDelta
+				
+				If CameraZoom < 18 Then CameraZoom = 18
+				If CameraZoom > 22 Then CameraZoom = 22
+				
+				Dim worldPerTile As Double = WorldTilesPerScreenTile
+				CameraCenterX = InitialWorldX - (((PinchMidX - (100%x / 2)) / TILE_SIZE) * worldPerTile)
+				CameraCenterY = InitialWorldY + (((PinchMidY - (100%y / 2)) / TILE_SIZE) * worldPerTile)
+				
+				ClampCamera
+				RenderCamera
+				
+				Return True
+			End If
+		End If
+		
+		' --- DRAGGING ---
+		If pointerCount = 1 And IsPinching = False Then
+			If actionMasked = 0 Then ' ACTION_DOWN
+				LastTouchX = X
+				LastTouchY = Y
+				IgnoreNextDrag = False
+				Return True
+				
+			Else If actionMasked = 2 Then ' ACTION_MOVE
+				If IgnoreNextDrag Then
+					LastTouchX = X
+					LastTouchY = Y
+					IgnoreNextDrag = False
+					Return True
+				End If
+				
+				Dim deltaX As Float = X - LastTouchX
+				Dim deltaY As Float = Y - LastTouchY
+				
+				If Abs(deltaX) > 1 Or Abs(deltaY) > 1 Then
+					LastTouchX = X
+					LastTouchY = Y
+					DragCamera(deltaX, deltaY)
+				End If
+				
+				Return True
+			End If
+		End If
+		
+		' --- TOUCH END / RELEASE ---
+		If actionMasked = 1 Or actionMasked = 6 Or actionMasked = 3 Then
+			If IsPinching Then
+				IsPinching = False
+				InitialPinchDistance = 0
+				IgnoreNextDrag = True
+				LastRenderedZoom = -1
+				RenderCamera
+			Else
+				IgnoreNextDrag = True
+				If actionMasked = 1 Then RenderCamera
+			End If
+		End If
+		
+	Catch
+		Log("Crash Prevented in MapTouch")
+	End Try
+	
+	Return True
+End Sub
+
+Sub DragCamera(deltaX As Float, deltaY As Float)
+	Dim worldPerTile As Double = WorldTilesPerScreenTile
+	CameraCenterX = CameraCenterX - ((deltaX / TILE_SIZE) * worldPerTile)
+	CameraCenterY = CameraCenterY + ((deltaY / TILE_SIZE) * worldPerTile)
+
+	ClampCamera
+	RenderCamera
+End Sub
+
+
+' ==============================================================================
+' 2. CAMERA & RENDERING PIPELINE
+' ==============================================================================
+Sub RenderCamera
+	Dim baseZoom As Int = Round(CameraZoom)
+	
+	If baseZoom < 18 Then baseZoom = 18
+	If baseZoom > 22 Then baseZoom = 22
+
+	If IsPinching And LastRenderedZoom <> -1 Then
+		baseZoom = LastRenderedZoom
+	End If
+
+	Dim zoomDifference As Double = CameraZoom - baseZoom
+	Dim baseCenter() As Double = CameraCenterAtZoom(baseZoom)
+	Dim centerIntX As Int = Floor(baseCenter(0))
+	Dim centerIntY As Int = Floor(baseCenter(1))
+
+	If IsPinching = False Then
+		If baseZoom <> LastRenderedZoom Or centerIntX <> LastRenderedCenterX Or centerIntY <> LastRenderedCenterY Then
+			RenderLayerA(baseZoom, baseCenter(0), baseCenter(1))
+			LastRenderedZoom = baseZoom
+			LastRenderedCenterX = centerIntX
+			LastRenderedCenterY = centerIntY
+		End If
+	End If
+
+	PositionLayer(pnlCanvasA, baseCenter(0), baseCenter(1), LastRenderedCenterX, LastRenderedCenterY, Power(2, zoomDifference))
+
+	UpdateBlueDotPositionContinuous
+	UpdatePinsContinuous
+	UpdateRouteIfNeeded
+End Sub
+
+Sub RenderLayerA(RenderZoom As Int, CenterX As Double, CenterY As Double)
+	Dim startCol As Int = Floor(CenterX) - Floor(TilesAcross / 2)
+	Dim startRow As Int = Floor(CenterY) + Floor(TilesDown / 2)
+
+	Dim needsDB As Boolean = False
 	For col = 0 To TilesAcross - 1
 		For row = 0 To TilesDown - 1
-			Dim TargetX As Int = StartCol + col
-			Dim TargetY As Int = StartRow - row
-			Dim iv As ImageView = TileViews(col, row)
-			Dim bmp As Bitmap = LoadTile(CurrentZoom, TargetX, TargetY)
+			Dim TileKey As String = RenderZoom & "_" & (startCol + col) & "_" & (startRow - row)
+			If TileCache.ContainsKey(TileKey) = False Then
+				needsDB = True
+				Exit
+			End If
+		Next
+		If needsDB Then Exit
+	Next
+
+	If needsDB Then
+		Dim minX As Int = startCol
+		Dim maxX As Int = startCol + TilesAcross - 1
+		Dim minY As Int = startRow - TilesDown + 1
+		Dim maxY As Int = startRow
+		
+		Dim rsBulk As ResultSet = sql1.ExecQuery2( _
+			"SELECT tile_column, tile_row, tile_data FROM tiles WHERE zoom_level = ? AND tile_column >= ? AND tile_column <= ? AND tile_row >= ? AND tile_row <= ?", _
+			Array As String(RenderZoom, minX, maxX, minY, maxY))
+			
+		Do While rsBulk.NextRow
+			Dim tX As Int = rsBulk.GetInt2(0)
+			Dim tY As Int = rsBulk.GetInt2(1)
+			Dim tKey As String = RenderZoom & "_" & tX & "_" & tY
+			
+			If TileCache.ContainsKey(tKey) = False Then
+				Dim data() As Byte = rsBulk.GetBlob2(2)
+				Dim InStream As InputStream
+				InStream.InitializeFromBytesArray(data, 0, data.Length)
+				Try
+					Dim bmpBulk As Bitmap
+					bmpBulk.Initialize2(InStream)
+					TileCache.Put(tKey, bmpBulk)
+				Catch
+					Log("OOM Prevented: Safely skipped loading a tile.")
+				End Try
+				InStream.Close
+			End If
+		Loop
+		rsBulk.Close
+	End If
+
+	For col = 0 To TilesAcross - 1
+		For row = 0 To TilesDown - 1
+			Dim targetX As Int = startCol + col
+			Dim targetY As Int = startRow - row
+			
+			Dim iv As ImageView = TileViewsA(col, row)
+			Dim bmp As Bitmap = LoadTile(RenderZoom, targetX, targetY)
+			
 			If bmp <> Null And bmp.IsInitialized Then
 				iv.Bitmap = bmp
 			Else
@@ -734,182 +875,303 @@ Sub RenderGrid
 			End If
 		Next
 	Next
+	
+	EvictOldTiles
 End Sub
 
-Sub ChangeZoom(TargetZoom As Int)
-	If TargetZoom < 18 Or TargetZoom > 22 Then Return
-	If TargetZoom = CurrentZoom Then Return
+Sub PositionLayer(TargetPanel As Panel, CenterXAtZoom As Double, CenterYAtZoom As Double, GridBaseX As Int, GridBaseY As Int, ScaleValue As Double)
+	Dim centerCol As Int = Floor(TilesAcross / 2)
+	Dim centerRow As Int = Floor(TilesDown / 2)
 
-	Dim panOffsetX As Float = pnlCanvas.Left - (-TILE_SIZE)
-	Dim panOffsetY As Float = pnlCanvas.Top - (-TILE_SIZE)
+	Dim offsetX As Double = CenterXAtZoom - GridBaseX
+	Dim offsetY As Double = CenterYAtZoom - GridBaseY
 
-	If TargetZoom > CurrentZoom Then
-		CenterTileX = CenterTileX * 2
-		CenterTileY = CenterTileY * 2
-		pnlCanvas.Left = -TILE_SIZE + (panOffsetX * 2)
-		pnlCanvas.Top = -TILE_SIZE + (panOffsetY * 2)
+	TargetPanel.Left = -((centerCol + offsetX) * TILE_SIZE) + (100%x / 2)
+	TargetPanel.Top = -((centerRow + (1 - offsetY)) * TILE_SIZE) + (100%y / 2)
+
+	Dim scaleF As Float = ScaleValue
+	Dim jo As JavaObject = TargetPanel
+	Dim isScaled As Boolean = (Abs(scaleF - 1.0) > 0.001)
+	
+	If isScaled Then
+		Dim pivotX As Float = (100%x / 2) - TargetPanel.Left
+		Dim pivotY As Float = (100%y / 2) - TargetPanel.Top
+		jo.RunMethod("setPivotX", Array As Object(pivotX))
+		jo.RunMethod("setPivotY", Array As Object(pivotY))
+		jo.RunMethod("setScaleX", Array As Object(scaleF))
+		jo.RunMethod("setScaleY", Array As Object(scaleF))
+		CurrentPanelScale = scaleF
 	Else
-		CenterTileX = Floor(CenterTileX / 2)
-		CenterTileY = Floor(CenterTileY / 2)
-		pnlCanvas.Left = -TILE_SIZE + (panOffsetX / 2)
-		pnlCanvas.Top = -TILE_SIZE + (panOffsetY / 2)
+		If CurrentPanelScale <> 1.0 Then
+			Dim f1 As Float = 1.0
+			jo.RunMethod("setScaleX", Array As Object(f1))
+			jo.RunMethod("setScaleY", Array As Object(f1))
+			CurrentPanelScale = 1.0
+		End If
 	End If
+End Sub
 
-	CurrentZoom = TargetZoom
+Sub LoadTile(Z As Int, X As Int, Y As Int) As Bitmap
+	Dim TileKey As String = Z & "_" & X & "_" & Y
+	If TileCache.ContainsKey(TileKey) Then Return TileCache.Get(TileKey)
+	Return Null
+End Sub
 
-	Dim rs As ResultSet = sql1.ExecQuery2("SELECT MIN(tile_column), MAX(tile_column), MIN(tile_row), MAX(tile_row) FROM tiles WHERE zoom_level = ?", Array As String(CurrentZoom))
-	If rs.NextRow Then
-		MinTileX = rs.GetInt2(0)
-		MaxTileX = rs.GetInt2(1)
-		MinTileY = rs.GetInt2(2)
-		MaxTileY = rs.GetInt2(3)
-	End If
-	rs.Close
-
-	Do While pnlCanvas.Left > 0
-		CenterTileX = CenterTileX - 1
-		pnlCanvas.Left = pnlCanvas.Left - TILE_SIZE
-	Loop
-	Do While pnlCanvas.Left < -(TILE_SIZE * 2)
-		CenterTileX = CenterTileX + 1
-		pnlCanvas.Left = pnlCanvas.Left + TILE_SIZE
-	Loop
-	Do While pnlCanvas.Top > 0
-		CenterTileY = CenterTileY + 1
-		pnlCanvas.Top = pnlCanvas.Top - TILE_SIZE
-	Loop
-	Do While pnlCanvas.Top < -(TILE_SIZE * 2)
-		CenterTileY = CenterTileY - 1
-		pnlCanvas.Top = pnlCanvas.Top + TILE_SIZE
-	Loop
-    
-	For col = 0 To TilesAcross - 1
-		For row = 0 To TilesDown - 1
-			TileViews(col, row).Bitmap = Null
+Sub EvictOldTiles
+	If TileCache.Size > 80 Then
+		Dim keysToRemove As List
+		keysToRemove.Initialize
+		For Each k As String In TileCache.Keys
+			keysToRemove.Add(k)
+			If keysToRemove.Size >= 40 Then Exit
 		Next
+		For Each k As String In keysToRemove
+			TileCache.Remove(k)
+		Next
+	End If
+End Sub
+
+
+' ==============================================================================
+' 3. MATH & BOUNDARIES
+' ==============================================================================
+Sub ClampCamera
+	Dim minZ As Double = 17.5
+	Dim maxZ As Double = 22.0
+
+	If CameraZoom < minZ Then CameraZoom = minZ
+	If CameraZoom > maxZ Then CameraZoom = maxZ
+
+	Dim baseZ As Int = Round(CameraZoom)
+	If baseZ < 18 Then baseZ = 18
+	
+	If ZoomBoundsCache.ContainsKey(baseZ) Then
+		Dim boundsObj As Object = ZoomBoundsCache.Get(baseZ)
+		Dim bounds() As Int = boundsObj
+		
+		Dim tileFactor As Double = Power(2, 22 - baseZ)
+		Dim absoluteMinX As Double = bounds(0) * tileFactor
+		Dim absoluteMaxX As Double = (bounds(1) + 1) * tileFactor
+		Dim absoluteMinY As Double = bounds(2) * tileFactor
+		Dim absoluteMaxY As Double = (bounds(3) + 1) * tileFactor
+
+		Dim worldPerTile As Double = WorldTilesPerScreenTile
+		Dim halfScreenWidth As Double = ((100%x / TILE_SIZE) / 2.0) * worldPerTile
+		Dim halfScreenHeight As Double = ((100%y / TILE_SIZE) / 2.0) * worldPerTile
+		
+		Dim safeMinX As Double = absoluteMinX + halfScreenWidth
+		Dim safeMaxX As Double = absoluteMaxX - halfScreenWidth
+		Dim safeMinY As Double = absoluteMinY + halfScreenHeight
+		Dim safeMaxY As Double = absoluteMaxY - halfScreenHeight
+
+		If safeMinX > safeMaxX Then
+			CameraCenterX = (absoluteMinX + absoluteMaxX) / 2.0
+		Else
+			If CameraCenterX < safeMinX Then CameraCenterX = safeMinX
+			If CameraCenterX > safeMaxX Then CameraCenterX = safeMaxX
+		End If
+		
+		If safeMinY > safeMaxY Then
+			CameraCenterY = (absoluteMinY + absoluteMaxY) / 2.0
+		Else
+			If CameraCenterY < safeMinY Then CameraCenterY = safeMinY
+			If CameraCenterY > safeMaxY Then CameraCenterY = safeMaxY
+		End If
+	End If
+End Sub
+
+Sub WorldTilesPerScreenTile As Double
+	Return Power(2, 22 - CameraZoom)
+End Sub
+
+Sub CameraCenterAtZoom(RenderZoom As Int) As Double()
+	Dim factor As Double = Power(2, 22 - RenderZoom)
+	Dim arr(2) As Double
+	arr(0) = CameraCenterX / factor
+	arr(1) = CameraCenterY / factor
+	Return arr
+End Sub
+
+Sub GetTileX(Lon As Double, Zoom As Int) As Double
+	Return (Lon + 180) / 360 * Power(2, Zoom)
+End Sub
+
+Sub GetTileY(Lat As Double, Zoom As Int) As Double
+	Dim latRad As Double = Lat * cPI / 180
+	Dim innerValue As Double = Tan(latRad) + (1 / Cos(latRad))
+	Dim naturalLog As Double = Logarithm(innerValue, cE)
+	Dim googleY As Double = (1 - (naturalLog / cPI)) / 2 * Power(2, Zoom)
+	Return (Power(2, Zoom) - 1) - googleY
+End Sub
+
+
+' ==============================================================================
+' 4. ROUTING ENGINE
+' ==============================================================================
+Sub btnTestRoute_Click
+	If txtStart.Text = "" Or txtEnd.Text = "" Then
+		ToastMessageShow("Please enter both Facility IDs!", False)
+		Return
+	End If
+	
+	Dim startFacID As Int = txtStart.Text
+	Dim endFacID As Int = txtEnd.Text
+	
+	Dim startNodeID As Int = -1
+	Dim startLat As Double, startLon As Double
+	Dim endNodeID As Int = -1
+	Dim endLat As Double, endLon As Double
+	
+	Dim rsStart As ResultSet = sqlData.ExecQuery2("SELECT TargetNodeID, Lat, Lon FROM Facilities WHERE FacilityID = ?", Array As String(startFacID))
+	If rsStart.NextRow Then
+		startNodeID = rsStart.GetInt("TargetNodeID")
+		startLat = rsStart.GetDouble("Lat")
+		startLon = rsStart.GetDouble("Lon")
+	End If
+	rsStart.Close
+	
+	Dim rsEnd As ResultSet = sqlData.ExecQuery2("SELECT TargetNodeID, Lat, Lon FROM Facilities WHERE FacilityID = ?", Array As String(endFacID))
+	If rsEnd.NextRow Then
+		endNodeID = rsEnd.GetInt("TargetNodeID")
+		endLat = rsEnd.GetDouble("Lat")
+		endLon = rsEnd.GetDouble("Lon")
+	End If
+	rsEnd.Close
+	
+	If startNodeID = -1 Or endNodeID = -1 Then
+		ToastMessageShow("Invalid Facility ID entered!", True)
+		Return
+	End If
+	
+	CurrentRoute = router.GetShortestPath(startNodeID, endNodeID)
+	
+	If CurrentRoute.IsInitialized And CurrentRoute.Size > 0 Then
+		Dim startBuilding As MapNode
+		startBuilding.Initialize
+		startBuilding.Lat = startLat
+		startBuilding.Lon = startLon
+		
+		Dim endBuilding As MapNode
+		endBuilding.Initialize
+		endBuilding.Lat = endLat
+		endBuilding.Lon = endLon
+		
+		CurrentRoute.InsertAt(0, startBuilding)
+		CurrentRoute.Add(endBuilding)
+		
+		For i = 0 To CurrentRoute.Size - 1
+			Dim mn As MapNode = CurrentRoute.Get(i)
+			mn.X22 = GetTileX(mn.Lon, 22)
+			mn.Y22 = GetTileY(mn.Lat, 22)
+		Next
+		
+		RouteBaseZoom = -1
+		DrawRouteLayerContinuous
+	Else
+		ToastMessageShow("No path found between those facilities!", True)
+	End If
+	
+	Dim ime As IME
+	ime.Initialize("")
+	ime.HideKeyboard
+End Sub
+
+Sub UpdateRouteIfNeeded
+	If CurrentRoute.IsInitialized = False Or CurrentRoute.Size < 2 Then Return
+
+	If IsUserTouching = False Then
+		If RouteBaseZoom <> CameraZoom Or RouteBaseX <> CameraCenterX Or RouteBaseY <> CameraCenterY Then
+			DrawRouteLayerContinuous
+		End If
+	End If
+	
+	PositionRouteLayer
+End Sub
+
+Sub PositionRouteLayer
+	If RouteBaseZoom = -1 Then Return
+
+	Dim baseWorldPerTile As Double = Power(2, 22 - RouteBaseZoom)
+	Dim offsetX As Double = ((RouteBaseX - CameraCenterX) / baseWorldPerTile) * TILE_SIZE
+	Dim offsetY As Double = ((CameraCenterY - RouteBaseY) / baseWorldPerTile) * TILE_SIZE
+
+	pnlRoute.Left = offsetX
+	pnlRoute.Top = offsetY
+
+	Dim scaleF As Float = Power(2, CameraZoom - RouteBaseZoom)
+	Dim jo As JavaObject = pnlRoute
+	Dim isScaled As Boolean = (Abs(scaleF - 1.0) > 0.001)
+	
+	If isScaled Then
+		Dim pivotX As Float = (100%x / 2) - pnlRoute.Left
+		Dim pivotY As Float = (100%y / 2) - pnlRoute.Top
+		jo.RunMethod("setPivotX", Array As Object(pivotX))
+		jo.RunMethod("setPivotY", Array As Object(pivotY))
+		jo.RunMethod("setScaleX", Array As Object(scaleF))
+		jo.RunMethod("setScaleY", Array As Object(scaleF))
+		RoutePanelScale = scaleF
+	Else
+		If RoutePanelScale <> 1.0 Then
+			Dim f1 As Float = 1.0
+			jo.RunMethod("setScaleX", Array As Object(f1))
+			jo.RunMethod("setScaleY", Array As Object(f1))
+			RoutePanelScale = 1.0
+		End If
+	End If
+End Sub
+
+Sub DrawRouteLayerContinuous
+	cvsRoute.DrawColor(Colors.Transparent)
+
+	If CurrentRoute.IsInitialized = False Or CurrentRoute.Size < 2 Then
+		pnlRoute.Invalidate
+		Return
+	End If
+
+	pnlRoute.Left = 0
+	pnlRoute.Top = 0
+	Dim jo As JavaObject = pnlRoute
+	Dim f1 As Float = 1.0
+	jo.RunMethod("setScaleX", Array As Object(f1))
+	jo.RunMethod("setScaleY", Array As Object(f1))
+	RoutePanelScale = 1.0
+
+	RouteBaseX = CameraCenterX
+	RouteBaseY = CameraCenterY
+	RouteBaseZoom = CameraZoom
+
+	Dim prevX As Float = -1
+	Dim prevY As Float = -1
+
+	Dim baseThickness As Float = 10dip
+	Dim dynamicThickness As Float = baseThickness * Power(2, CameraZoom - 22)
+	If dynamicThickness < 2dip Then dynamicThickness = 2dip
+
+	Dim worldPerTile As Double = WorldTilesPerScreenTile
+	Dim halfWidth As Float = 100%x / 2
+	Dim halfHeight As Float = 100%y / 2
+	Dim scaleFactor As Double = TILE_SIZE / worldPerTile
+
+	For i = 0 To CurrentRoute.Size - 1
+		Dim mn As MapNode = CurrentRoute.Get(i)
+		Dim pixelX As Float = ((mn.X22 - CameraCenterX) * scaleFactor) + halfWidth
+		Dim pixelY As Float = ((CameraCenterY - mn.Y22) * scaleFactor) + halfHeight
+
+		If i > 0 Then
+			cvsRoute.DrawLine(prevX, prevY, pixelX, pixelY, Colors.ARGB(200, 30, 144, 255), dynamicThickness)
+		End If
+
+		prevX = pixelX
+		prevY = pixelY
 	Next
-    
-	TileCache.Clear
-	TileLoadCount = 0
-    
-	RenderGrid
-	UpdateBlueDotPosition
-	UpdateAllPinPositions
+
+	pnlRoute.Invalidate
 End Sub
 
-Sub maptouch(ViewTag As Object, Action As Int, X As Float, Y As Float, MotionEvent As Object) As Boolean 'ignore
-	Try
-		Dim event As JavaObject = MotionEvent
-		Dim pointerCount As Int = event.RunMethod("getPointerCount", Null)
-		Dim actionMasked As Int = Bit.And(Action, 255)
 
-		If pointerCount = 2 Then
-			IsPinching = True
-			Dim x1 As Float = X
-			Dim y1 As Float = Y
-			Dim x2 As Float = event.RunMethod("getX", Array As Object(1))
-			Dim y2 As Float = event.RunMethod("getY", Array As Object(1))
-			Dim distance As Float = Sqrt(Power(x1 - x2, 2) + Power(y1 - y2, 2))
-            
-			If actionMasked = 5 Then
-				InitialPinchDistance = distance
-				ZoomJustTriggered = False
-			Else If actionMasked = 2 Then
-				If InitialPinchDistance > 0 Then
-					CurrentScale = distance / InitialPinchDistance
-					If ZoomJustTriggered Then
-						If CurrentScale > 0.8 And CurrentScale < 1.2 Then
-							ZoomJustTriggered = False
-							InitialPinchDistance = distance
-						End If
-					Else
-						If CurrentZoom < 22 And CurrentScale >= 2.0 Then
-							ChangeZoom(CurrentZoom + 1)
-							InitialPinchDistance = distance
-							CurrentScale = 1.0
-							ZoomJustTriggered = True
-						Else If CurrentZoom > 18 And CurrentScale <= 0.5 Then
-							ChangeZoom(CurrentZoom - 1)
-							InitialPinchDistance = distance
-							CurrentScale = 1.0
-							ZoomJustTriggered = True
-						End If
-					End If
-					If CurrentZoom <= 18 And CurrentScale < 1.0 Then CurrentScale = 1.0
-					If CurrentZoom >= 22 And CurrentScale > 1.0 Then CurrentScale = 1.0
-				End If
-			End If
-			Return True
-		End If
-        
-		If pointerCount = 1 And IsPinching = False Then
-			If actionMasked = 0 Then
-				LastTouchX = X
-				LastTouchY = Y
-			Else If actionMasked = 2 Then
-				Dim deltaX As Float = X - LastTouchX
-				Dim deltaY As Float = Y - LastTouchY
-				If Abs(deltaX) > 2 Or Abs(deltaY) > 2 Then
-					Dim NextLeft As Float = pnlCanvas.Left + deltaX
-					Dim NextTop As Float = pnlCanvas.Top + deltaY
-					If (CenterTileX - BufferX) <= MinTileX And NextLeft > -TILE_SIZE Then NextLeft = -TILE_SIZE
-					If (CenterTileX + BufferX) >= MaxTileX And NextLeft < -TILE_SIZE Then NextLeft = -TILE_SIZE
-					If (CenterTileY + BufferY) >= MaxTileY And NextTop > -TILE_SIZE Then NextTop = -TILE_SIZE
-					If (CenterTileY - BufferY) <= MinTileY And NextTop < -TILE_SIZE Then NextTop = -TILE_SIZE
-					pnlCanvas.Left = NextLeft
-					pnlCanvas.Top = NextTop
-					LastTouchX = X
-					LastTouchY = Y
-					Dim NeedsRedraw As Boolean = False
-					Do While pnlCanvas.Left > 0
-						CenterTileX = CenterTileX - 1
-						pnlCanvas.Left = pnlCanvas.Left - TILE_SIZE
-						NeedsRedraw = True
-					Loop
-					Do While pnlCanvas.Left < -(TILE_SIZE * 2)
-						CenterTileX = CenterTileX + 1
-						pnlCanvas.Left = pnlCanvas.Left + TILE_SIZE
-						NeedsRedraw = True
-					Loop
-					Do While pnlCanvas.Top > 0
-						CenterTileY = CenterTileY + 1
-						pnlCanvas.Top = pnlCanvas.Top - TILE_SIZE
-						NeedsRedraw = True
-					Loop
-					Do While pnlCanvas.Top < -(TILE_SIZE * 2)
-						CenterTileY = CenterTileY - 1
-						pnlCanvas.Top = pnlCanvas.Top + TILE_SIZE
-						NeedsRedraw = True
-					Loop
-					If NeedsRedraw Then
-						RenderGrid
-						UpdateBlueDotPosition
-						UpdateAllPinPositions
-					End If
-				End If
-			End If
-		End If
-        
-		If actionMasked = 1 Or actionMasked = 6 Then
-			If IsPinching Then
-				IsPinching = False
-				ZoomJustTriggered = False
-				CurrentScale = 1.0
-				LastTouchX = X
-				LastTouchY = Y
-			End If
-		End If
-
-	Catch
-		Log("Crash Prevented: " & LastException.Message)
-		TileCache.Clear
-		TileLoadCount = 0
-	End Try
-	Return True
-End Sub
-#End Region
-
-#Region GPS
+' ==============================================================================
+' 5. GPS & BLUE DOT
+' ==============================================================================
 Sub flp_ConnectionSuccess
 	Log("GPS Engine Connected!")
 	Dim LocationRequest1 As LocationRequest
@@ -923,40 +1185,37 @@ Sub flp_ConnectionFailed(ConnectionResult1 As Int)
 	Log("GPS Engine Failed: " & ConnectionResult1)
 End Sub
 
-Sub flp_LocationChanged(Location1 As Location)
+Sub flp_LocationChanged (Location1 As Location)
 	CurrentLat = Location1.Latitude
 	CurrentLon = Location1.Longitude
+	
+	DotX22 = GetTileX(CurrentLon, 22)
+	DotY22 = GetTileY(CurrentLat, 22)
+	
 	pnlBlueDot.Visible = True
-	UpdateBlueDotPosition
-End Sub
-#End Region
-
-#Region MATH
-Sub GetTileX(Lon As Double, Zoom As Int) As Double
-	Return (Lon + 180) / 360 * Power(2, Zoom)
+	UpdateBlueDotPositionContinuous
 End Sub
 
-Sub GetTileY(Lat As Double, Zoom As Int) As Double
-	Dim latRad As Double = Lat * cPI / 180
-	Dim innerValue As Double = Tan(latRad) + (1 / Cos(latRad))
-	Dim naturalLog As Double = Logarithm(innerValue, cE)
-	Dim googleY As Double = (1 - (naturalLog / cPI)) / 2 * Power(2, Zoom)
-	Return (Power(2, Zoom) - 1) - googleY
-End Sub
-
-Sub UpdateBlueDotPosition
+Sub UpdateBlueDotPositionContinuous
 	If CurrentLat = 0 And CurrentLon = 0 Then Return
-	Dim exactTileX As Double = GetTileX(CurrentLon, CurrentZoom)
-	Dim exactTileY As Double = GetTileY(CurrentLat, CurrentZoom)
-	Dim StartCol As Int = CenterTileX - Floor(TilesAcross / 2)
-	Dim StartRow As Int = CenterTileY + Floor(TilesDown / 2)
-	Dim PixelX As Float = (exactTileX - StartCol) * TILE_SIZE
-	Dim PixelY As Float = (StartRow - exactTileY) * TILE_SIZE
-	pnlBlueDot.Left = PixelX - (DOT_SIZE / 2)
-	pnlBlueDot.Top = PixelY - (DOT_SIZE / 2)
-	pnlBlueDot.BringToFront
+
+	Dim worldPerTile As Double = WorldTilesPerScreenTile
+	Dim pixelX As Float = (((DotX22 - CameraCenterX) / worldPerTile) * TILE_SIZE) + (100%x / 2)
+	Dim pixelY As Float = (((CameraCenterY - DotY22) / worldPerTile) * TILE_SIZE) + (100%y / 2)
+
+	pnlBlueDot.Left = pixelX - (DOT_SIZE / 2)
+	pnlBlueDot.Top = pixelY - (DOT_SIZE / 2)
 End Sub
-#End Region
+
+Sub UpdatePinsContinuous
+	If ActivePins.IsInitialized = False Then Return
+	
+	Dim worldPerTile As Double = WorldTilesPerScreenTile
+	For Each pin As MapPin In ActivePins
+		' We pass CameraZoom into the pin so it can check its Priority!
+		pin.UpdatePosition(CameraCenterX, CameraCenterY, CameraZoom, worldPerTile, TILE_SIZE)
+	Next
+End Sub
 #End Region
 
 #Region EDIT TXT
